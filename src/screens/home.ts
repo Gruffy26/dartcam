@@ -1,5 +1,19 @@
+import { loadCalibration } from '../calibration';
 import { h } from '../dom';
 import type { Nav } from '../main';
+import { getSettings } from '../settings';
+
+function calibrationStatus(): string {
+  const source = getSettings().source;
+  const cal = loadCalibration(source);
+  const what = source === 'camera' ? 'Caméra' : 'Vidéo de test';
+  if (!cal) return `${what} : cible pas encore calibrée`;
+  const d = new Date(cal.createdAt);
+  const when = Number.isNaN(d.getTime())
+    ? ''
+    : ` le ${d.toLocaleDateString('fr-FR')} à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+  return `${what} : cible calibrée${when} ✓`;
+}
 
 export function homeScreen(nav: Nav): HTMLElement {
   return h(
@@ -14,5 +28,6 @@ export function homeScreen(nav: Nav): HTMLElement {
       h('button', { class: 'big', onclick: () => nav('settings') }, 'Réglages'),
       h('button', { class: 'link', onclick: () => nav('help') }, 'Comment placer le téléphone ?'),
     ),
+    h('p', { class: 'muted status' }, calibrationStatus()),
   );
 }

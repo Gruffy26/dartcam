@@ -1,170 +1,64 @@
+import { boardOverlay, calibrationMismatch, loadCalibration, tryBoardToFrame } from '../calibration';
+import { createCameraStage } from '../camera-stage';
 import { h } from '../dom';
+import { frameToScreen } from '../frameview';
 import type { Nav, Screen } from '../main';
 import { loadOpenCV, type CV } from '../opencv';
-import { getSettings, updateSettings } from '../settings';
-import { openCamera, openVideoFile, SourceError, type FrameSource } from '../source';
-import { isScreenKeptOn, keepScreenOn } from '../wakelock';
-import { cropRect, formatZoom } from '../zoom';
+import { drawBoardOverlay, fitCanvas } from '../overlay-draw';
+import { isScreenKeptOn } from '../wakelock';
+import { formatZoom } from '../zoom';
 
 /** Largeur des images analysées : assez pour viser, assez léger pour l'iPhone. */
 export const ANALYSIS_WIDTH = 640;
 const ANALYSIS_INTERVAL_MS = 100; // ≈10 analyses par seconde
 
-const PURPOSE_TEXT = {
-  calibrate: 'Calibration — arrive à l’étape 3. Pour l’instant : vérifie que toute la cible est dans l’image.',
-  game: 'Partie — arrive aux étapes 4 à 6. Pour l’instant : test de la caméra et de l’analyse.',
-};
-
-export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
-  let source: FrameSource | null = null;
+// Écran de partie, provisoire : vérifie que la calibration est toujours alignée
+// et mesure la vitesse d'analyse. La détection des fléchettes arrive à l'étape 4.
+export function viewerScreen(nav: Nav): Screen {
+  const cam = createCameraStage(nav);
   let disposed = false;
   let timer = 0;
+  let raf = 0;
 
-  const stage = h('div', { class: 'stage' });
+  const overlay = h('canvas', { class: 'overlay' });
+  const note = h('div', { class: 'note' });
   const stats = h('div', { class: 'stats' }, 'Démarrage…');
-  const message = h('div', { class: 'message hidden' });
-  const fileInput = h('input', { type: 'file', accept: 'video/*,.mov,.mp4', class: 'hidden' });
-  const sourceBtn = h('button', { class: 'pill' });
-  const zoomSlider = h('input', { type: 'range', class: 'zoom-slider', 'aria-label': 'Zoom' });
-  const zoomLabel = h('span', { class: 'zoom-value' });
-  const zoomMode = h('small', { class: 'zoom-mode' });
-  const zoomBar = h(
-    'div',
-    { class: 'zoombar hidden' },
-    h('button', { class: 'zoom-btn', 'aria-label': 'Dézoomer', onclick: () => void stepZoom(-1) }, '−'),
-    zoomSlider,
-    h('button', { class: 'zoom-btn', 'aria-label': 'Zoomer', onclick: () => void stepZoom(1) }, '+'),
-    h('div', { class: 'zoom-info' }, zoomLabel, zoomMode),
-  );
-
-  const el = h(
-    'main',
-    { class: 'viewer' },
-    stage,
-    h(
-      'div',
-      { class: 'topbar' },
-      h('button', { class: 'pill', onclick: () => nav('home') }, '‹ Accueil'),
-      sourceBtn,
-    ),
-    h('div', { class: 'note' }, PURPOSE_TEXT[purpose]),
-    zoomBar,
+  cam.el.insertBefore(overlay, cam.el.children[1]);
+  cam.el.append(note);
+  // Pas de zoom pendant la partie : le changer rendrait la calibration fausse.
+  cam.zoomBar.classList.add('hidden');
+  cam.dock.append(
+    h('button', { class: 'big', onclick: () => nav('calibrate') }, 'Recalibrer'),
     stats,
-    message,
-    fileInput,
   );
 
-  function showMessage(text: string, actions: HTMLElement[] = []) {
-    message.replaceChildren(h('p', {}, text), ...actions);
-    message.classList.remove('hidden');
-  }
-  function hideMessage() {
-    message.classList.add('hidden');
-  }
-
-  function stopSource() {
-    source?.stop();
-    source = null;
-    stage.replaceChildren();
+  function calibrationState() {
+    const f = cam.frame();
+    const kind = cam.source?.kind;
+    if (!f || !kind) return { cal: null, problem: null };
+    const cal = loadCalibration(kind);
+    if (!cal) return { cal: null, problem: 'Pas encore de calibration pour cette source.' };
+    const problem = calibrationMismatch(cal, { zoom: cam.zoomValue(), aspect: f.crop.w / f.crop.h });
+    return { cal, problem };
   }
 
-  function attach(s: FrameSource) {
-    if (disposed) return s.stop();
-    source = s;
-    stage.replaceChildren(s.video);
-    hideMessage();
-    refreshZoom();
+  function draw() {
+    raf = requestAnimationFrame(draw);
+    const ctx = fitCanvas(overlay, cam.el.clientWidth, cam.el.clientHeight);
+    const f = cam.frame();
+    const { cal, problem } = calibrationState();
+    note.textContent = problem
+      ? `⚠️ ${problem} Touche « Recalibrer ».`
+      : 'Partie — la détection arrive à l’étape 4. Vérifie que le dessin jaune reste aligné sur la cible.';
+    note.classList.toggle('warn', !!problem);
+    if (!f || !cal || problem) return;
+    const refW = 1000;
+    const refH = refW / (f.crop.w / f.crop.h);
+    const B2F = tryBoardToFrame(cal.points, refW, refH);
+    if (B2F) drawBoardOverlay(ctx, boardOverlay(B2F, refW, refH), (p) => frameToScreen(f.screen, p), { alpha: 0.6 });
   }
-
-  // --- Zoom ---------------------------------------------------------------
-  function refreshZoom() {
-    const z = source?.zoom;
-    zoomBar.classList.toggle('hidden', !z);
-    if (!z || !source) return;
-    zoomSlider.min = String(z.min);
-    zoomSlider.max = String(z.max);
-    zoomSlider.step = String(z.step);
-    zoomSlider.value = String(z.value);
-    zoomLabel.textContent = formatZoom(z.value);
-    zoomMode.textContent = z.mode === 'capteur' ? 'zoom caméra' : 'zoom numérique';
-    // Zoom numérique : on agrandit l'affichage autour du centre, exactement comme
-    // le recadrage appliqué à l'analyse (cropRect).
-    source.video.style.transform = z.digital > 1 ? `scale(${z.digital})` : '';
-  }
-
-  async function setZoom(value: number) {
-    const z = source?.zoom;
-    if (!z) return;
-    await z.set(value);
-    updateSettings({ zoom: z.value });
-    refreshZoom();
-  }
-
-  function stepZoom(dir: 1 | -1) {
-    const z = source?.zoom;
-    if (z) return setZoom(Math.round((z.value + dir * 0.5) * 10) / 10);
-  }
-
-  zoomSlider.addEventListener('input', () => void setZoom(Number(zoomSlider.value)));
-
-  async function start() {
-    stopSource();
-    const mode = getSettings().source;
-    sourceBtn.textContent = mode === 'camera' ? '📷 Caméra' : '🎞 Vidéo de test';
-    if (mode === 'camera') {
-      showMessage('Ouverture de la caméra…');
-      try {
-        attach(await openCamera(getSettings().zoom));
-      } catch (e) {
-        const text = e instanceof SourceError ? e.message : String(e);
-        showMessage(text, [
-          h('button', { class: 'big primary', onclick: () => void start() }, 'Réessayer'),
-          h('button', { class: 'big', onclick: () => useVideo() }, 'Utiliser une vidéo de test'),
-        ]);
-      }
-    } else {
-      showMessage('Choisis une vidéo filmée depuis le trépied (.mov ou .mp4).', [
-        h('button', { class: 'big primary', onclick: () => fileInput.click() }, 'Choisir une vidéo'),
-      ]);
-    }
-  }
-
-  function useVideo() {
-    updateSettings({ source: 'video' });
-    void start();
-  }
-
-  sourceBtn.addEventListener('click', () => {
-    updateSettings({ source: getSettings().source === 'camera' ? 'video' : 'camera' });
-    void start();
-  });
-
-  fileInput.addEventListener('change', async () => {
-    const file = fileInput.files?.[0];
-    fileInput.value = '';
-    if (!file) return;
-    stopSource();
-    showMessage('Chargement de la vidéo…');
-    try {
-      attach(await openVideoFile(file));
-    } catch (e) {
-      showMessage(e instanceof SourceError ? e.message : String(e), [
-        h('button', { class: 'big primary', onclick: () => fileInput.click() }, 'Choisir une autre vidéo'),
-      ]);
-    }
-  });
-
-  // iOS coupe la caméra quand l'app passe en arrière-plan : on la relance au retour.
-  function onVisibility() {
-    if (document.visibilityState !== 'visible' || source?.kind !== 'camera') return;
-    const stream = source.video.srcObject as MediaStream | null;
-    if (!stream || stream.getVideoTracks().every((t) => t.readyState === 'ended')) void start();
-    else void source.video.play().catch(() => {});
-  }
-  document.addEventListener('visibilitychange', onVisibility);
 
   // Boucle d'analyse de test : image réduite à 640 px → niveaux de gris avec OpenCV.
-  // Sert à mesurer la vitesse sur l'iPhone ; la détection viendra s'y brancher.
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
   let frames = 0;
@@ -172,12 +66,13 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
   let lastFpsT = performance.now();
 
   function analyse(cv: CV) {
-    const v = source?.video;
-    if (!v || v.readyState < 2 || !v.videoWidth) {
+    const f = cam.frame();
+    const v = cam.source?.video;
+    if (!f || !v) {
       stats.textContent = 'En attente d’images…';
       return;
     }
-    const crop = cropRect(v.videoWidth, v.videoHeight, source?.zoom?.digital ?? 1);
+    const { crop } = f;
     const w = ANALYSIS_WIDTH;
     const hgt = Math.round((crop.h * w) / crop.w);
     if (canvas.width !== w || canvas.height !== hgt) {
@@ -190,10 +85,8 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
     const t1 = performance.now();
     const rgba = cv.matFromImageData(img);
     const gray = new cv.Mat();
-    let brightness = 0;
     try {
       cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
-      brightness = cv.mean(gray)[0];
     } finally {
       rgba.delete();
       gray.delete();
@@ -208,8 +101,8 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
       lastFpsT = now;
     }
     stats.textContent =
-      `Source ${v.videoWidth}×${v.videoHeight} · zoom ${formatZoom(source?.zoom?.value ?? 1)} · analyse ${w}×${hgt} · ` +
-      `${fps.toFixed(1)} img/s · capture ${(t1 - t0).toFixed(1)} ms + OpenCV ${(t2 - t1).toFixed(1)} ms · luminosité ${brightness.toFixed(0)} · ` +
+      `Source ${f.vw}×${f.vh} · zoom ${formatZoom(cam.zoomValue())} · analyse ${w}×${hgt} · ` +
+      `${fps.toFixed(1)} img/s · capture ${(t1 - t0).toFixed(1)} ms + OpenCV ${(t2 - t1).toFixed(1)} ms · ` +
       `écran maintenu allumé : ${isScreenKeptOn() ? 'oui' : 'non'}`;
   }
 
@@ -229,17 +122,15 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
     loop();
   });
 
-  keepScreenOn(true);
-  void start();
+  draw();
 
   return {
-    el,
+    el: cam.el,
     dispose() {
       disposed = true;
       clearTimeout(timer);
-      document.removeEventListener('visibilitychange', onVisibility);
-      keepScreenOn(false);
-      stopSource();
+      cancelAnimationFrame(raf);
+      cam.dispose();
     },
   };
 }
