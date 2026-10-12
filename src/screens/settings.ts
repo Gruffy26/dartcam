@@ -1,44 +1,21 @@
 import { DEFAULT_PARAMS, PARAM_SPECS, type DetectorParams } from '../detector/params';
 import { h } from '../dom';
 import type { Nav } from '../main';
-import { getSettings, updateSettings, type Settings } from '../settings';
+import { getSettings, updateSettings } from '../settings';
+import { appBar, group, row, segmented, toggle } from '../ui';
 
 export function settingsScreen(nav: Nav): HTMLElement {
-  const choice = (value: Settings['source'], label: string, hint: string) =>
-    h(
-      'label',
-      { class: 'choice' },
-      h('input', {
-        type: 'radio',
-        name: 'source',
-        value,
-        checked: getSettings().source === value,
-        onchange: () => updateSettings({ source: value }),
-      }),
-      h('span', {}, h('b', {}, label), h('small', {}, hint)),
-    );
-
-  const toggle = (label: string, hint: string, checked: boolean, onchange: (v: boolean) => void) => {
-    const input = h('input', { type: 'checkbox', class: 'switch', checked });
-    input.addEventListener('change', () => onchange(input.checked));
-    return h('label', { class: 'choice' }, input, h('span', {}, h('b', {}, label), h('small', {}, hint)));
-  };
+  const s = getSettings();
 
   // Curseurs des réglages de détection.
-  const sliders = h('div', { class: 'sliders' });
+  const sliders = h('div', { class: 'stack' });
   function renderSliders() {
     const p = getSettings().detector;
     sliders.replaceChildren(
       ...(Object.keys(PARAM_SPECS) as (keyof DetectorParams)[]).map((k) => {
         const spec = PARAM_SPECS[k];
         const value = h('output', {}, fmt(p[k], spec.unit));
-        const input = h('input', {
-          type: 'range',
-          min: String(spec.min),
-          max: String(spec.max),
-          step: String(spec.step),
-          value: String(p[k]),
-        });
+        const input = h('input', { type: 'range', min: String(spec.min), max: String(spec.max), step: String(spec.step), value: String(p[k]) });
         input.addEventListener('input', () => {
           const v = Number(input.value);
           value.textContent = fmt(v, spec.unit);
@@ -46,45 +23,51 @@ export function settingsScreen(nav: Nav): HTMLElement {
         });
         return h('label', { class: 'slider' }, h('span', {}, spec.label, value), input);
       }),
-    );
-  }
-  renderSliders();
-
-  return h(
-    'main',
-    { class: 'screen settings' },
-    h('header', {}, h('button', { class: 'back', onclick: () => nav('home') }, '‹ Retour'), h('h2', {}, 'Réglages')),
-    h(
-      'section',
-      {},
-      h('h3', {}, 'Source des images'),
-      choice('camera', 'Caméra arrière', 'Pour jouer.'),
-      choice('video', 'Vidéo de test', 'Une vidéo .mov / .mp4 filmée depuis le trépied, pour tester sans lancer de fléchettes.'),
-    ),
-    h(
-      'section',
-      {},
-      h('h3', {}, 'Détection'),
-      toggle('Debug', 'Affiche le masque des changements, la fléchette trouvée, la vue de face et les mesures.', getSettings().debug, (v) =>
-        updateSettings({ debug: v }),
-      ),
-      h('details', { class: 'advanced' }, h('summary', {}, 'Réglages avancés'), sliders,
-        h('button', {
-          class: 'big',
+      h(
+        'button',
+        {
+          class: 'btn ghost block',
           onclick: () => {
             updateSettings({ detector: { ...DEFAULT_PARAMS } });
             renderSliders();
           },
-        }, 'Valeurs par défaut'),
+        },
+        'Valeurs par défaut',
+      ),
+    );
+  }
+  renderSliders();
+  const advanced = h('div', { class: 'hidden' }, group('Réglages avancés de la détection', sliders));
+  const advRow = row('Réglages avancés', 'Seuils de la détection', null, () => {
+    advanced.classList.toggle('hidden');
+  });
+
+  return h(
+    'main',
+    { class: 'page settings' },
+    appBar({ title: 'Réglages', onBack: () => nav('home') }),
+    group(
+      'Source des images',
+      segmented(
+        [
+          { value: 'camera', label: 'Caméra' },
+          { value: 'video', label: 'Vidéo de test' },
+        ],
+        s.source,
+        (v) => updateSettings({ source: v as 'camera' | 'video' }),
       ),
     ),
-    h(
-      'section',
-      {},
-      h('h3', {}, 'À propos'),
-      h('p', { class: 'muted' }, `Version : ${__BUILD_ID__}`),
-      h('button', { class: 'big', onclick: () => location.reload() }, 'Recharger l’app'),
+    group(
+      'Partie',
+      row('Annonce vocale', 'Score de chaque volée à voix haute', toggle(s.voice, (v) => updateSettings({ voice: v }), 'Annonce vocale')),
     ),
+    group(
+      'Détection',
+      row('Mode debug', 'Masque, fléchette trouvée, vue de face, mesures', toggle(s.debug, (v) => updateSettings({ debug: v }), 'Mode debug')),
+      advRow,
+    ),
+    advanced,
+    group('À propos', row('Version', __BUILD_ID__, null), row('Recharger l’app', 'Pour récupérer la dernière version', null, () => location.reload())),
   );
 }
 

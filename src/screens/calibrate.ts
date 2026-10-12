@@ -49,7 +49,7 @@ export function calibrateScreen(nav: Nav): Screen {
   const hintText = h('div', { class: 'calib-hint' });
   const card = h('div', { class: 'calib-card' }, schema, h('div', {}, stepText, hintText));
 
-  const autoBtn = h('button', { class: 'big', onclick: () => void runAuto() }, 'Détection auto');
+  const autoBtn = h('button', { class: 'big', onclick: () => void runAuto() }, 'Relancer');
   const undoBtn = h('button', { class: 'big', onclick: () => undo() }, 'Annuler le repère');
   const restartBtn = h('button', { class: 'big', onclick: () => restart() }, 'Recommencer');
   const validateBtn = h('button', { class: 'big primary', onclick: () => validate() }, 'Valider');
@@ -84,7 +84,7 @@ export function calibrateScreen(nav: Nav): Screen {
     const res = await detectBoard(cam, () => disposed || id !== run, 4);
     if (disposed || id !== run) return;
     if (res.ok) {
-      auto = { state: 'found', text: '✅ Cible détectée automatiquement.', errorMm: res.errorMm };
+      auto = { state: 'found', text: 'Cible détectée', errorMm: res.errorMm };
       if (!touchedSinceAuto) {
         points = res.points;
         method = 'auto';
@@ -166,7 +166,8 @@ export function calibrateScreen(nav: Nav): Screen {
     const n = points.length;
     const done = n >= CALIB_TARGETS.length;
     const target = CALIB_TARGETS[Math.min(n, CALIB_TARGETS.length - 1)];
-    schema.innerHTML = miniBoardSvg(done ? null : target.board);
+    schema.innerHTML = done ? '' : miniBoardSvg(target.board);
+    schema.classList.toggle('hidden', done);
     if (auto.state === 'searching' && n === 0) {
       stepText.textContent = auto.text;
       hintText.textContent = 'Garde toute la cible dans l’image (pince à deux doigts pour zoomer). Tu peux aussi poser les repères toi-même.';
@@ -178,13 +179,11 @@ export function calibrateScreen(nav: Nav): Screen {
           ? 'Pince avec deux doigts pour zoomer. Pose un doigt sur la cible : une loupe t’aide à viser, lâche au bon endroit.'
           : 'Tu peux faire glisser un repère déjà posé pour le corriger.');
     } else {
-      stepText.textContent =
-        method === 'auto' ? '✅ Cible détectée : vérifie le dessin jaune' : 'Vérifie que le dessin jaune colle à la cible';
       const e = error();
-      const quality = e == null ? '' : e < 2 ? ' — très bien' : e < 5 ? ' — correct' : ' — un repère semble mal placé';
+      stepText.textContent = method === 'auto' ? 'Cible détectée' : 'Vérifie le dessin jaune';
       hintText.textContent =
-        `Fais glisser un repère pour ajuster (il bouge moins vite que le doigt, pour plus de précision).` +
-        (e == null ? '' : ` Écart moyen : ${e.toFixed(1).replace('.', ',')} mm${quality}.`);
+        (e == null ? '' : `Écart ${e.toFixed(1).replace('.', ',')} mm${e >= 5 ? ' — un repère semble mal placé' : ''} · `) +
+        'fais glisser un repère pour ajuster';
       hintText.classList.toggle('warn', e != null && e >= 5);
     }
     if (done) hintText.classList.toggle('warn', (error() ?? 0) >= 5);

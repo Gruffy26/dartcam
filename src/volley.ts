@@ -18,6 +18,8 @@ export interface DartRecord {
   corrected: boolean;
   /** Score donné par la détection automatique (avant correction éventuelle). */
   autoScore: Score | null;
+  /** Pointe très proche d'un fil : score à vérifier. */
+  uncertain?: boolean;
 }
 
 export const DARTS_PER_VOLLEY = 3;

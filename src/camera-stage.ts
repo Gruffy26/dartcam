@@ -3,6 +3,7 @@
 // écran maintenu allumé, reprise après passage en arrière-plan.
 
 import { h } from './dom';
+import { icon } from './icons';
 import { containRect } from './frameview';
 import type { Nav } from './main';
 import { getSettings, updateSettings } from './settings';
@@ -39,7 +40,8 @@ export interface CameraStage {
   dispose(): void;
 }
 
-export function createCameraStage(nav: Nav): CameraStage {
+export function createCameraStage(nav: Nav, opts: { chrome?: boolean } = {}): CameraStage {
+  const chrome = opts.chrome ?? true;
   let source: FrameSource | null = null;
   let disposed = false;
   const listeners: ((reason: ChangeReason) => void)[] = [];
@@ -57,13 +59,16 @@ export function createCameraStage(nav: Nav): CameraStage {
     'main',
     { class: 'viewer' },
     stage,
-    h(
-      'div',
-      { class: 'topbar' },
-      h('button', { class: 'pill', onclick: () => nav('home') }, '‹ Accueil'),
-      sourceBtn,
-    ),
-    dock,
+    // Sans « chrome » (aperçu dans l'écran de partie), l'écran hôte fournit ses boutons.
+    chrome
+      ? h(
+          'div',
+          { class: 'topbar' },
+          h('button', { class: 'pill', onclick: () => nav('home') }, icon('back', 18), 'Accueil'),
+          sourceBtn,
+        )
+      : null,
+    chrome ? dock : null,
     zoomBadge,
     message,
     fileInput,
@@ -184,7 +189,7 @@ export function createCameraStage(nav: Nav): CameraStage {
     stopSource();
     emit('source');
     const mode = getSettings().source;
-    sourceBtn.textContent = mode === 'camera' ? '📷 Caméra' : '🎞 Vidéo de test';
+    sourceBtn.replaceChildren(icon(mode === 'camera' ? 'camera' : 'video', 18), mode === 'camera' ? 'Caméra' : 'Vidéo de test');
     if (mode === 'camera') {
       showMessage('Ouverture de la caméra…');
       try {

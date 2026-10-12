@@ -50,7 +50,7 @@ function build(name: ScreenName): Screen {
 function boot() {
   mount(
     root,
-    h('main', { class: 'screen loading' }, h('div', { class: 'spinner' }), h('p', {}, 'Chargement…'),
+    h('main', { class: 'loading' }, h('div', { class: 'spinner' }), h('p', {}, 'Chargement…'),
       h('p', { class: 'muted' }, 'La première ouverture télécharge environ 10 Mo.')),
   );
   loadOpenCV().then(
@@ -59,8 +59,8 @@ function boot() {
     (e: Error) =>
       mount(
         root,
-        h('main', { class: 'screen loading' }, h('p', {}, e.message),
-          h('button', { class: 'big primary', onclick: boot }, 'Réessayer')),
+        h('main', { class: 'loading' }, h('p', {}, e.message),
+          h('button', { class: 'btn primary lg', onclick: boot }, 'Réessayer')),
       ),
   );
 }

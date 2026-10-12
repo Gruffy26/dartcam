@@ -1,5 +1,6 @@
 import { h } from '../dom';
 import type { Nav } from '../main';
+import { appBar } from '../ui';
 
 // Schéma vu de dessus : la cible au mur, le téléphone sur trépied à 30–50° de l'axe.
 const SCHEMA = `
@@ -23,19 +24,20 @@ export function helpScreen(nav: Nav): HTMLElement {
   schema.innerHTML = SCHEMA;
   return h(
     'main',
-    { class: 'screen help' },
-    h('header', {}, h('button', { class: 'back', onclick: () => nav('home') }, '‹ Retour'), h('h2', {}, 'Placer le téléphone')),
+    { class: 'page help' },
+    appBar({ title: 'Placer le téléphone', onBack: () => nav('home') }),
     schema,
     h(
       'ul',
-      { class: 'tips' },
+      { class: 'tips group-body' },
       h('li', {}, h('b', {}, 'Hauteur : '), 'objectif à peu près à la hauteur du centre (bull).'),
-      h('li', {}, h('b', {}, 'Angle : '), 'sur le côté, à 30–50° de l’axe de la cible. Pas trop rasant.'),
+      h('li', {}, h('b', {}, 'Angle : '), 'sur le côté (à gauche ou à droite), à 30–50° de l’axe de la cible. Pas trop rasant.'),
+      h('li', {}, h('b', {}, 'Droit : '), 'le téléphone bien vertical sur le trépied (pas penché de côté).'),
       h('li', {}, h('b', {}, 'Cadrage : '), 'toute la cible visible, avec un peu de marge autour.'),
       h('li', {}, h('b', {}, 'Lumière : '), 'cible bien éclairée, sans fenêtre ni lampe dans le dos de la cible (pas de contre-jour).'),
       h('li', {}, h('b', {}, 'Stabilité : '), 'ne touche plus au trépied après la calibration.'),
       h('li', {}, h('b', {}, 'Batterie : '), 'branche l’iPhone pendant les parties.'),
     ),
-    h('button', { class: 'big primary', onclick: () => nav('calibrate') }, 'Ouvrir la caméra'),
+    h('button', { class: 'btn primary lg block', onclick: () => nav('calibrate') }, 'Vérifier la cible'),
   );
 }
