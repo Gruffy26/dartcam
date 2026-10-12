@@ -138,9 +138,10 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
       canvas.width = w;
       canvas.height = hgt;
     }
-    ctx.drawImage(v, 0, 0, w, hgt);
     const t0 = performance.now();
+    ctx.drawImage(v, 0, 0, w, hgt);
     const img = ctx.getImageData(0, 0, w, hgt);
+    const t1 = performance.now();
     const rgba = cv.matFromImageData(img);
     const gray = new cv.Mat();
     let brightness = 0;
@@ -151,7 +152,7 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
       rgba.delete();
       gray.delete();
     }
-    const ms = performance.now() - t0;
+    const t2 = performance.now();
 
     frames++;
     const now = performance.now();
@@ -162,19 +163,22 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
     }
     stats.textContent =
       `Source ${v.videoWidth}×${v.videoHeight} · analyse ${w}×${hgt} · ` +
-      `${fps.toFixed(1)} img/s · ${ms.toFixed(1)} ms · luminosité ${brightness.toFixed(0)} · ` +
+      `${fps.toFixed(1)} img/s · capture ${(t1 - t0).toFixed(1)} ms + OpenCV ${(t2 - t1).toFixed(1)} ms · luminosité ${brightness.toFixed(0)} · ` +
       `écran maintenu allumé : ${isScreenKeptOn() ? 'oui' : 'non'}`;
   }
 
   void loadOpenCV().then((cv) => {
     const loop = () => {
       if (disposed) return;
+      const start = performance.now();
       try {
         analyse(cv);
       } catch (e) {
         stats.textContent = `Erreur d’analyse : ${String(e)}`;
       }
-      timer = window.setTimeout(loop, ANALYSIS_INTERVAL_MS);
+      // Cadence visée : une analyse toutes les 100 ms, temps de calcul compris.
+      const spent = performance.now() - start;
+      timer = window.setTimeout(loop, Math.max(10, ANALYSIS_INTERVAL_MS - spent));
     };
     loop();
   });
