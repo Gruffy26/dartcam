@@ -121,9 +121,16 @@ run('vidéo réelle — détection des fléchettes', () => {
     const cv = await loadCvForTests();
     const meta = JSON.parse(readFileSync(join(dir!, 'meta.json'), 'utf8'));
     const calFrame = Number(process.env.CALIB_FRAME ?? 30);
-    const cal = autoCalibrate(cv, loadFrame(calFrame));
-    if (!cal.ok) throw new Error(cal.reason);
-    const det = new DartDetector(cv, { frameToBoard: cal.H, width: meta.width, height: meta.height });
+    // Comme l'app : 5 détections sur ≈ 1,5 s, position médiane.
+    const { medianPoints, frameToBoard } = await import('../calibration');
+    const sets = [];
+    for (let k = 0; k < 15 && sets.length < 5; k += 3) {
+      const r = autoCalibrate(cv, loadFrame(calFrame + k));
+      if (r.ok) sets.push(r.points);
+    }
+    if (!sets.length) throw new Error('calibration impossible');
+    const H0 = frameToBoard(medianPoints(sets), meta.width, meta.height);
+    let det = new DartDetector(cv, { frameToBoard: H0, width: meta.width, height: meta.height });
     console.log('caméra', JSON.stringify({ f: det.cam?.focal.toFixed(0), estimée: det.cam?.focalEstimated, normal: det.cam?.normalSign }));
     const dt = 1000 / meta.fps;
     const darts: string[] = [];
@@ -170,6 +177,14 @@ run('vidéo réelle — détection des fléchettes', () => {
             writePng(join(process.env.OUT_DIR, `dart-${i}.png`), crop, cw * 2, ch);
           }
           console.log(i, 'FLÉCHETTE', ev.score.libelle, `pointe=(${ev.tip.x.toFixed(0)},${ev.tip.y.toFixed(0)})`, `empennage=(${ev.tail.x.toFixed(0)},${ev.tail.y.toFixed(0)})`, `r=${Math.hypot(ev.board.x, ev.board.y).toFixed(0)}mm`, `aire=${ev.area.toFixed(0)}`, `conf=${ev.confidence.toFixed(2)}`, JSON.stringify(det.debug.tip?.votes));
+        } else if (ev.kind === 'moved') {
+          // Comme l'app : nouvelle détection de la cible et nouveau détecteur.
+          const again = autoCalibrate(cv, frame);
+          console.log(i, 'DÉPLACÉ', JSON.stringify(ev.shift), again.ok ? 'recalibré' : 'recalibration impossible');
+          if (again.ok) {
+            det.dispose();
+            det = new DartDetector(cv, { frameToBoard: again.H, width: meta.width, height: meta.height });
+          }
         } else if (ev.kind === 'ignored' && ev.reason !== 'small') console.log(i, 'ignoré', ev.reason, ev.area.toFixed(0));
         else if (ev.kind === 'reference') console.log(i, 'référence');
       }

@@ -148,7 +148,7 @@ function boardAreaPx(calib: Calib): number {
 }
 
 export class DartDetector {
-  readonly cam: CameraModel | null;
+  cam: CameraModel | null;
   debug: DetectorDebug;
   params: DetectorParams;
 
@@ -164,24 +164,34 @@ export class DartDetector {
   private kOpen: any;
   private kClose: any;
   private anchor: Anchor | null = null;
-  private movedSince = 0;
+  private shifts: { t: number; x: number; y: number }[] = [];
+  /** Image nettement décalée par rapport à l'ancrage : on n'analyse pas (trépied bougé ?). */
+  private shifted = false;
 
   constructor(cv: CV, calib: Calib, params: Partial<DetectorParams> = {}) {
     this.cv = cv;
     this.calib = calib;
     this.params = { ...DEFAULT_PARAMS, ...params };
-    this.cam = cameraFromHomography(
-      invertH(calib.frameToBoard),
-      calib.width,
-      calib.height,
-      defaultFocalFor(calib.width, calib.height, calib.zoom ?? 1),
-    );
-    this.boardArea = boardAreaPx(calib);
+    this.cam = null;
+    this.boardArea = 0;
     this.zone = cv.Mat.zeros(calib.height, calib.width, cv.CV_8UC1);
-    this.buildZone();
+    this.setFrameToBoard(calib.frameToBoard);
     this.kOpen = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(3, 3));
     this.kClose = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7));
     this.debug = { state: 'warmup', shift: { x: 0, y: 0 }, motion: 0, motionLimit: 0, minArea: 0, maxArea: 0, processMs: 0 };
+  }
+
+  /** (Re)définit la calibration utilisée : modèle de caméra, surface et zone de la cible. */
+  private setFrameToBoard(F2B: Mat3) {
+    this.calib = { ...this.calib, frameToBoard: F2B };
+    this.cam = cameraFromHomography(
+      invertH(F2B),
+      this.calib.width,
+      this.calib.height,
+      defaultFocalFor(this.calib.width, this.calib.height, this.calib.zoom ?? 1),
+    );
+    this.boardArea = boardAreaPx(this.calib);
+    this.buildZone();
   }
 
   private buildZone() {
@@ -200,6 +210,11 @@ export class DartDetector {
     const marginChanged = p.marginMm != null && p.marginMm !== this.params.marginMm;
     this.params = { ...this.params, ...p };
     if (marginChanged) this.buildZone();
+  }
+
+  /** Calibration utilisée, image analysée → cible. */
+  get frameToBoard(): Mat3 {
+    return this.calib.frameToBoard;
   }
 
   /** La prochaine image stable deviendra la référence (ex. après le retrait des fléchettes). */
@@ -259,16 +274,24 @@ export class DartDetector {
       this.debug.shift = { x: 0, y: 0 };
       return gray;
     }
-    const s = estimateShift(this.anchor, gray.data, 8);
+    const s = estimateShift(this.anchor, gray.data, 16);
     this.debug.shift = { x: s.x, y: s.y };
-    // Décalage important et durable : le trépied a bougé.
-    if (Math.hypot(s.x, s.y) > 6) {
-      if (!this.movedSince) this.movedSince = t;
-      else if (t - this.movedSince > 1500) {
-        events.push({ kind: 'moved', shift: { x: s.x, y: s.y } });
-        this.movedSince = t;
-      }
-    } else this.movedSince = 0;
+    // Vibrations (le décalage va et vient) : compensées par le recalage.
+    // Déplacement (le décalage reste stable à plus de 4 px pendant 1 s) : le téléphone
+    // a bougé, la perspective a changé aussi → on suspend et on demande de redétecter la cible.
+    this.shifts.push({ t, x: s.x, y: s.y });
+    while (this.shifts.length && t - this.shifts[0].t > 1000) this.shifts.shift();
+    const k = this.shifts.length;
+    const mxs = this.shifts.reduce((a, p) => a + p.x, 0) / k;
+    const mys = this.shifts.reduce((a, p) => a + p.y, 0) / k;
+    const sd = Math.sqrt(this.shifts.reduce((a, p) => a + (p.x - mxs) ** 2 + (p.y - mys) ** 2, 0) / k);
+    const spanned = t - this.shifts[0].t >= 800;
+    const offset = Math.hypot(mxs, mys);
+    this.shifted = offset > 4 && sd < Math.max(1.5, offset * 0.4);
+    if (this.shifted && spanned) {
+      events.push({ kind: 'moved', shift: { x: mxs, y: mys } });
+      this.shifts = [];
+    }
     if (Math.abs(s.x) < 0.05 && Math.abs(s.y) < 0.05) return gray;
     const M = cv.matFromArray(2, 3, cv.CV_64F, [1, 0, s.x, 0, 1, s.y]);
     const out = new cv.Mat();
@@ -291,7 +314,7 @@ export class DartDetector {
       this.debug.minArea = this.minArea;
       this.debug.maxArea = this.maxArea;
 
-      if (moving) {
+      if (moving || this.shifted) {
         this.stableSince = t;
         this.sawMotion = true;
       }
@@ -299,10 +322,9 @@ export class DartDetector {
 
       if (!this.ref) {
         this.debug.state = 'warmup';
-        if (!moving && stableFor >= this.params.stableMs) {
+        // Première référence : on attend un peu plus longtemps que tout soit bien immobile.
+        if (!moving && !this.shifted && stableFor >= Math.max(this.params.stableMs, 1000)) {
           this.ref = cur.clone();
-          // Ancrage reconstruit sur cette image stable (même repère, image plus nette).
-          this.anchor = makeAnchor(cur.data, cur.cols, cur.rows, this.zone.data) ?? this.anchor;
           this.sawMotion = false;
           this.lastAnalyse = t;
           events.push({ kind: 'reference' });

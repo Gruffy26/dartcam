@@ -137,3 +137,57 @@ export function renderBoard(boardToImage: Mat3, width: number, height: number, o
   }
   return { data, width, height };
 }
+
+/** Projection d'un point 3D (mm ; z vers la caméra) avec le même modèle que cameraHomography. */
+export function projectPose(p: CameraPose, x: number, y: number, z: number): Pt {
+  const yaw = (p.yawDeg * Math.PI) / 180;
+  const pitch = ((p.pitchDeg ?? 0) * Math.PI) / 180;
+  const roll = ((p.rollDeg ?? 0) * Math.PI) / 180;
+  const C: V3 = [
+    p.distance * Math.sin(yaw) * Math.cos(pitch),
+    p.distance * Math.sin(pitch),
+    p.distance * Math.cos(yaw) * Math.cos(pitch),
+  ];
+  const f = norm(sub([0, 0, 0], C));
+  let r = norm(cross(f, [0, 1, 0]));
+  let d = cross(f, r);
+  const rr: V3 = [
+    r[0] * Math.cos(roll) + d[0] * Math.sin(roll),
+    r[1] * Math.cos(roll) + d[1] * Math.sin(roll),
+    r[2] * Math.cos(roll) + d[2] * Math.sin(roll),
+  ];
+  d = cross(f, rr);
+  r = rr;
+  const v = sub([x, y, z], C);
+  return {
+    x: p.width / 2 + (p.shift?.x ?? 0) + (p.focal * dot(r, v)) / dot(f, v),
+    y: p.height / 2 + (p.shift?.y ?? 0) + (p.focal * dot(d, v)) / dot(f, v),
+  };
+}
+
+/**
+ * Fléchettes plantées (pointe en `tip`, mm), dessinées à l'image : fût fin et sombre
+ * jusqu'à 90 mm, puis empennage large et clair. Légèrement inclinées vers le haut.
+ */
+export function dartsPainter(pose: CameraPose, tips: Pt[]) {
+  const segs = tips.map((t) => {
+    const a = projectPose(pose, t.x, t.y, 0);
+    const b = projectPose(pose, t.x, t.y + 15, 90);
+    const c = projectPose(pose, t.x, t.y + 22, 130);
+    return { a, b, c };
+  });
+  const distSeg = (x: number, y: number, p: Pt, q: Pt) => {
+    const vx = q.x - p.x;
+    const vy = q.y - p.y;
+    const l2 = vx * vx + vy * vy;
+    const u = Math.max(0, Math.min(1, ((x - p.x) * vx + (y - p.y) * vy) / l2));
+    return Math.hypot(x - (p.x + u * vx), y - (p.y + u * vy));
+  };
+  return (x: number, y: number): number[] | null => {
+    for (const s of segs) {
+      if (distSeg(x, y, s.b, s.c) < 7) return [70, 110, 230]; // empennage bleu
+      if (distSeg(x, y, s.a, s.b) < 1.8) return [95, 95, 100]; // fût
+    }
+    return null;
+  };
+}

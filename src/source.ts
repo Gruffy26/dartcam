@@ -8,6 +8,11 @@ export interface FrameSource {
   video: HTMLVideoElement;
   /** Zoom réglable (caméra uniquement ; une vidéo de test est utilisée telle quelle). */
   zoom: ZoomControl | null;
+  /**
+   * Bloque l'exposition, la balance des blancs et la mise au point (si possible) pour
+   * que la luminosité ne change pas entre deux images. Renvoie ce qui a été bloqué.
+   */
+  lock(): Promise<string>;
   stop(): void;
 }
 
@@ -44,10 +49,12 @@ export async function openCamera(initialZoom = 1): Promise<FrameSource> {
   await video.play().catch(() => {});
   const zoom = createZoomControl(stream.getVideoTracks()[0] ?? null, initialZoom);
   await zoom.set(zoom.value);
+  const track = stream.getVideoTracks()[0] ?? null;
   return {
     kind: 'camera',
     video,
     zoom,
+    lock: () => lockCamera(track),
     stop() {
       stream.getTracks().forEach((t) => t.stop());
       video.srcObject = null;
@@ -75,7 +82,9 @@ export function cameraErrorMessage(e: unknown): string {
 export async function openVideoFile(file: File): Promise<FrameSource> {
   const url = URL.createObjectURL(file);
   const video = makeVideo();
-  video.loop = true;
+  // Pas de lecture en boucle : le retour brutal au début ressemblerait à un changement
+  // sur la cible. En fin de vidéo, l'écran propose « Rejouer ».
+  video.loop = false;
   video.src = url;
   await new Promise<void>((resolve, reject) => {
     video.onloadeddata = () => resolve();
@@ -86,6 +95,7 @@ export async function openVideoFile(file: File): Promise<FrameSource> {
     kind: 'video',
     video,
     zoom: null,
+    lock: async () => 'vidéo de test',
     stop() {
       video.pause();
       video.removeAttribute('src');
@@ -93,4 +103,25 @@ export async function openVideoFile(file: File): Promise<FrameSource> {
       URL.revokeObjectURL(url);
     },
   };
+}
+
+async function lockCamera(track: MediaStreamTrack | null): Promise<string> {
+  if (!track?.getCapabilities) return 'non supporté';
+  const caps = track.getCapabilities() as Record<string, unknown>;
+  const modes = (k: string) => (Array.isArray(caps[k]) ? (caps[k] as string[]) : []);
+  const done: string[] = [];
+  for (const [key, label] of [
+    ['exposureMode', 'exposition'],
+    ['whiteBalanceMode', 'balance des blancs'],
+    ['focusMode', 'mise au point'],
+  ] as const) {
+    if (!modes(key).includes('manual')) continue;
+    try {
+      await track.applyConstraints({ advanced: [{ [key]: 'manual' } as MediaTrackConstraintSet] });
+      done.push(label);
+    } catch {
+      /* non supporté : on garde le mode automatique */
+    }
+  }
+  return done.length ? `${done.join(', ')} bloquée(s)` : 'non supporté';
 }

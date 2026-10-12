@@ -5,7 +5,7 @@ import { calibrateScreen } from './screens/calibrate';
 import { helpScreen } from './screens/help';
 import { homeScreen } from './screens/home';
 import { settingsScreen } from './screens/settings';
-import { viewerScreen } from './screens/viewer';
+import { gameScreen } from './screens/game';
 
 export type ScreenName = 'home' | 'help' | 'settings' | 'calibrate' | 'game';
 export type Nav = (name: ScreenName) => void;
@@ -38,7 +38,7 @@ function build(name: ScreenName): Screen {
       return calibrateScreen(nav);
     case 'game':
       // La cible est détectée automatiquement à l'ouverture de la caméra.
-      return viewerScreen(nav);
+      return gameScreen(nav);
   }
 }
 

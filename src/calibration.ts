@@ -125,3 +125,17 @@ export function saveCalibration(cal: Calibration): boolean {
 export function clearCalibration(kind: SourceKind): void {
   removeKey(key(kind));
 }
+
+/**
+ * Calibration médiane de plusieurs détections successives : si le trépied oscille
+ * encore un peu, chaque image donne des repères légèrement différents ; la médiane
+ * correspond à la position moyenne.
+ */
+export function medianPoints(sets: Pt[][]): Pt[] {
+  const med = (v: number[]) => {
+    const s = [...v].sort((a, b) => a - b);
+    const m = s.length >> 1;
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+  return sets[0].map((_, i) => ({ x: med(sets.map((p) => p[i].x)), y: med(sets.map((p) => p[i].y)) }));
+}

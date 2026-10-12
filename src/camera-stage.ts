@@ -92,6 +92,21 @@ export function createCameraStage(nav: Nav): CameraStage {
     hideMessage();
     refreshZoom();
     emit('source');
+    if (s.kind === 'video') {
+      s.video.onended = () =>
+        showMessage('Fin de la vidéo.', [
+          h('button', {
+            class: 'big primary',
+            onclick: () => {
+              hideMessage();
+              s.video.currentTime = 0;
+              void s.video.play();
+              emit('source'); // on repart de zéro : cible, référence, volée
+            },
+          }, 'Rejouer'),
+          h('button', { class: 'big', onclick: () => fileInput.click() }, 'Choisir une autre vidéo'),
+        ]);
+    }
   }
 
   // --- Zoom ---------------------------------------------------------------

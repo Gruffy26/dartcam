@@ -1,7 +1,7 @@
 // Lance la calibration automatique sur l'image actuelle de la caméra.
 
 import { autoCalibrate, blurForClassification, classifyPixels, colorMatchScore, type AutoCalibResult } from './autocalib';
-import { frameToBoard, type Calibration } from './calibration';
+import { frameToBoard, medianPoints, type Calibration } from './calibration';
 import type { CameraStage } from './camera-stage';
 import { loadOpenCV } from './opencv';
 
@@ -33,23 +33,29 @@ export type AutoRun = (AutoCalibResult & { ms: number }) | { ok: false; reason: 
 export async function detectBoard(
   cam: CameraStage,
   cancelled: () => boolean,
-  attempts = 6,
+  attempts = 10,
+  samples = 5,
 ): Promise<AutoRun> {
   const cv = await loadOpenCV();
   let last: AutoRun = { ok: false, reason: 'Pas d’image de la caméra.', ms: 0 };
+  const found: Extract<AutoRun, { ok: true }>[] = [];
   // Laisse la caméra régler son exposition avant le premier essai.
   await wait(600);
-  for (let i = 0; i < attempts && !cancelled(); i++) {
+  for (let i = 0; i < attempts && !cancelled() && found.length < samples; i++) {
     const img = grab(cam);
     if (img) {
       const t0 = performance.now();
       const res = autoCalibrate(cv, img);
       last = { ...res, ms: performance.now() - t0 };
-      if (res.ok) return last;
+      if (res.ok) found.push(last as Extract<AutoRun, { ok: true }>);
     }
-    await wait(500);
+    await wait(found.length ? 250 : 500);
   }
-  return last;
+  if (!found.length) return last;
+  // Plusieurs détections sur ≈ 1,5 s : on garde la position médiane (trépied qui oscille).
+  const best = found[found.length - 1];
+  const points = medianPoints(found.map((r) => r.points));
+  return { ...best, points, errorMm: Math.max(...found.map((r) => r.errorMm)) };
 }
 
 /** La calibration enregistrée colle-t-elle encore à l'image (trépied pas bougé) ? */
