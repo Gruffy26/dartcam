@@ -1,0 +1,168 @@
+:root {
+  --bg: #121418;
+  --panel: #1d2026;
+  --text: #f2f2f2;
+  --muted: #9aa0a8;
+  --accent: #2a9d8f;
+  --danger: #d62828;
+  --radius: 16px;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+#app { min-height: 100%; }
+
+button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+
+/* Écrans classiques */
+.screen {
+  min-height: 100dvh;
+  padding: calc(env(safe-area-inset-top) + 16px) calc(env(safe-area-inset-right) + 20px)
+    calc(env(safe-area-inset-bottom) + 24px) calc(env(safe-area-inset-left) + 20px);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.screen header { display: flex; align-items: center; gap: 12px; }
+.screen h2 { margin: 0; font-size: 1.6rem; }
+.screen h3 { margin: 0 0 8px; font-size: 1.2rem; }
+
+.big {
+  display: block;
+  width: 100%;
+  min-height: 72px;
+  padding: 16px 20px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+.big.primary { background: var(--accent); color: #fff; }
+.big:active { transform: scale(0.98); opacity: 0.9; }
+
+.back, .link {
+  background: none;
+  color: var(--accent);
+  font-size: 1.2rem;
+  padding: 8px 0;
+}
+.link { text-decoration: underline; }
+
+/* Accueil */
+.home { justify-content: center; }
+.brand { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.brand img { width: 112px; height: 112px; border-radius: 24px; }
+.brand h1 { margin: 0; font-size: 2.8rem; letter-spacing: 0.02em; }
+.menu { display: flex; flex-direction: column; gap: 16px; }
+
+/* Aide */
+.schema svg { width: 100%; height: auto; background: var(--panel); border-radius: var(--radius); }
+.tips { margin: 0; padding-left: 1.2em; font-size: 1.15rem; line-height: 1.5; display: grid; gap: 8px; }
+
+/* Réglages */
+.settings section { display: grid; gap: 12px; }
+.choice {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  font-size: 1.2rem;
+}
+.choice input { width: 28px; height: 28px; margin: 2px 0 0; accent-color: var(--accent); }
+.choice span { display: grid; gap: 4px; }
+.choice small { color: var(--muted); font-size: 0.95rem; }
+
+/* Chargement */
+.loading { justify-content: center; align-items: center; text-align: center; font-size: 1.4rem; }
+.spinner {
+  width: 64px;
+  height: 64px;
+  border: 6px solid var(--panel);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Vue caméra plein écran */
+.viewer {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  overflow: hidden;
+}
+.stage { position: absolute; inset: 0; }
+.feed { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.topbar {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 10px);
+  left: calc(env(safe-area-inset-left) + 10px);
+  right: calc(env(safe-area-inset-right) + 10px);
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.pill {
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  padding: 12px 18px;
+  border-radius: 999px;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+.note, .stats {
+  position: absolute;
+  left: calc(env(safe-area-inset-left) + 10px);
+  right: calc(env(safe-area-inset-right) + 10px);
+  background: rgba(0, 0, 0, 0.6);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+.note { top: calc(env(safe-area-inset-top) + 70px); font-size: 1rem; }
+.stats {
+  bottom: calc(env(safe-area-inset-bottom) + 10px);
+  font: 0.85rem ui-monospace, Menlo, monospace;
+  color: #cfe;
+}
+.message {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(92vw, 520px);
+  background: rgba(20, 22, 26, 0.95);
+  border-radius: var(--radius);
+  padding: 20px;
+  display: grid;
+  gap: 12px;
+  font-size: 1.2rem;
+  text-align: center;
+}
+.message p { margin: 0; }
