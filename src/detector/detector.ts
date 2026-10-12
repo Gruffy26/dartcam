@@ -21,6 +21,9 @@ import { cameraFromHomography, defaultFocalFor, outDirection, project, type Came
 import { DEFAULT_PARAMS, type DetectorParams } from './params';
 import { extendTip, findTip, locateDart, mergeAlongAxis, type TipResult } from './tip';
 
+/** Débordement du changement au-delà du bout réel, dû au flou des images (px). */
+const TIP_BLUR_PX = 1.5;
+
 export interface DartEvent {
   kind: 'dart';
   /** Pointe et empennage, en pixels de l'image analysée. */
@@ -177,6 +180,10 @@ export class DartDetector {
   private mode: DetectorMode = 'throwing';
   /** Image de la cible au début de la volée (sans fléchette de cette volée). */
   private volleyStart: any = null;
+  /** Canal couleur (rouge − vert) de la référence et du début de volée : un fût gris sur
+   * un anneau rouge ou vert a presque la même luminosité, mais pas la même couleur. */
+  private refC: any = null;
+  private volleyStartC: any = null;
   /** Fléchettes comptées depuis le début de la volée (détectées ou ajoutées à la main). */
   private dartsSinceStart = 0;
 
@@ -232,7 +239,8 @@ export class DartDetector {
   /** La prochaine image stable deviendra la référence (ex. après le retrait des fléchettes). */
   resetReference() {
     this.ref?.delete();
-    this.ref = null;
+    this.refC?.delete();
+    this.ref = this.refC = null;
     this.mode = 'throwing';
     this.debug.state = 'warmup';
   }
@@ -250,9 +258,11 @@ export class DartDetector {
     this.dartsSinceStart++;
   }
 
-  private startVolley(cur: any) {
+  private startVolley(cur: any, curC: any) {
     this.volleyStart?.delete();
+    this.volleyStartC?.delete();
     this.volleyStart = cur.clone();
+    this.volleyStartC = curC.clone();
     this.dartsSinceStart = 0;
     this.mode = 'throwing';
   }
@@ -269,17 +279,65 @@ export class DartDetector {
     return (this.boardArea * this.params.maxAreaPermille) / 1000;
   }
 
-  private toGray(img: RgbaImage) {
+  /** Niveaux de gris et canal couleur (rouge − vert, centré sur 128), tous deux floutés. */
+  private toPlanes(img: RgbaImage): { g: any; c: any } {
     const cv = this.cv;
     const rgba = cv.matFromImageData(img as ImageData);
     const gray = new cv.Mat();
+    const chroma = new cv.Mat();
+    const ch = new cv.MatVector();
     try {
       cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
       cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+      cv.split(rgba, ch);
+      const r = ch.get(0);
+      const g = ch.get(1);
+      cv.addWeighted(r, 0.5, g, -0.5, 128, chroma);
+      r.delete();
+      g.delete();
+      cv.GaussianBlur(chroma, chroma, new cv.Size(5, 5), 0);
     } finally {
       rgba.delete();
+      ch.delete();
     }
-    return gray;
+    return { g: gray, c: chroma };
+  }
+
+  /**
+   * Différences avec une image de référence (Mat 8 bits à libérer) :
+   *  - `g` : écart de luminosité (après égalisation) — seul à pouvoir déclencher une
+   *    détection (les bords rouges très contrastés en couleur réagiraient à la moindre
+   *    vibration résiduelle) ;
+   *  - `m` : maximum de `g` et de l'écart de couleur (×1,5) — pour compléter la
+   *    silhouette d'une fléchette déjà trouvée (fût gris sur un anneau rouge ou vert).
+   */
+  private diffTo(refG: any, refC: any, g: any, c: any): { g: any; m: any } {
+    const cv = this.cv;
+    const norm = new cv.Mat();
+    const dg = new cv.Mat();
+    const dc = new cv.Mat();
+    try {
+      const mRef = cv.mean(refG, this.zone)[0];
+      const mCur = cv.mean(g, this.zone)[0];
+      g.convertTo(norm, -1, mCur > 1 ? mRef / mCur : 1, 0);
+      cv.absdiff(refG, norm, dg);
+      cv.bitwise_and(dg, this.zone, dg);
+      // Balance des blancs automatique : on égalise aussi la couleur moyenne.
+      const cRef = cv.mean(refC, this.zone)[0];
+      const cCur = cv.mean(c, this.zone)[0];
+      c.convertTo(dc, -1, 1, cRef - cCur);
+      cv.absdiff(refC, dc, dc);
+      dc.convertTo(dc, -1, 1.5, 0);
+      cv.max(dg, dc, dc);
+      cv.bitwise_and(dc, this.zone, dc);
+      return { g: dg, m: dc };
+    } catch (e) {
+      dg.delete();
+      dc.delete();
+      throw e;
+    } finally {
+      norm.delete();
+    }
   }
 
   /** Nombre de pixels changés entre deux images, dans la zone. */
@@ -300,12 +358,13 @@ export class DartDetector {
   }
 
   /** Recale l'image sur l'ancrage (renvoie une nouvelle Mat, ou la même si inutile). */
-  private align(gray: any, t: number, events: DetectorEvent[]): any {
+  private align(planes: { g: any; c: any }, t: number, events: DetectorEvent[]): { g: any; c: any } {
     const cv = this.cv;
+    const gray = planes.g;
     if (!this.anchor) {
       this.anchor = makeAnchor(gray.data, gray.cols, gray.rows, this.zone.data);
       this.debug.shift = { x: 0, y: 0 };
-      return gray;
+      return planes;
     }
     const s = estimateShift(this.anchor, gray.data, 16);
     this.debug.shift = { x: s.x, y: s.y };
@@ -325,19 +384,25 @@ export class DartDetector {
       events.push({ kind: 'moved', shift: { x: mxs, y: mys } });
       this.shifts = [];
     }
-    if (Math.abs(s.x) < 0.05 && Math.abs(s.y) < 0.05) return gray;
+    if (Math.abs(s.x) < 0.05 && Math.abs(s.y) < 0.05) return planes;
     const M = cv.matFromArray(2, 3, cv.CV_64F, [1, 0, s.x, 0, 1, s.y]);
-    const out = new cv.Mat();
-    cv.warpAffine(gray, out, M, new cv.Size(gray.cols, gray.rows), cv.INTER_LINEAR | cv.WARP_INVERSE_MAP, cv.BORDER_REPLICATE);
+    const warp = (m: any) => {
+      const out = new cv.Mat();
+      cv.warpAffine(m, out, M, new cv.Size(m.cols, m.rows), cv.INTER_LINEAR | cv.WARP_INVERSE_MAP, cv.BORDER_REPLICATE);
+      m.delete();
+      return out;
+    };
+    const res = { g: warp(planes.g), c: warp(planes.c) };
     M.delete();
-    gray.delete();
-    return out;
+    return res;
   }
 
   process(img: RgbaImage, t: number): DetectorEvent[] {
     const t0 = performance.now();
     const events: DetectorEvent[] = [];
-    const cur = this.align(this.toGray(img), t, events);
+    const planes = this.align(this.toPlanes(img), t, events);
+    const cur = planes.g;
+    const curC = planes.c;
     try {
       const motionLimit = Math.max(15, (this.boardArea * this.params.motionPermille) / 1000);
       const motion = this.prev ? this.changed(cur, this.prev) : Infinity;
@@ -358,7 +423,8 @@ export class DartDetector {
         // Première référence : on attend un peu plus longtemps que tout soit bien immobile.
         if (!moving && !this.shifted && stableFor >= Math.max(this.params.stableMs, 1000)) {
           this.ref = cur.clone();
-          this.startVolley(cur);
+          this.refC = curC.clone();
+          this.startVolley(cur, curC);
           this.sawMotion = false;
           this.lastAnalyse = t;
           events.push({ kind: 'reference' });
@@ -371,13 +437,13 @@ export class DartDetector {
         if ((settled || periodic) && !this.shifted) {
           this.sawMotion = false;
           this.lastAnalyse = t;
-          if ((this.dartsSinceStart > 0 || this.mode === 'removal') && this.isClean(cur)) {
+          if ((this.dartsSinceStart > 0 || this.mode === 'removal') && this.isClean(cur, curC)) {
             // Cible vide comme au début de la volée : les fléchettes ont été retirées.
-            this.replaceRef(cur);
-            this.startVolley(cur);
+            this.replaceRef(cur, curC);
+            this.startVolley(cur, curC);
             events.push({ kind: 'cleared' });
           } else if (this.mode === 'throwing') {
-            const ev = this.analyse(cur);
+            const ev = this.analyse(cur, curC);
             if (ev) {
               if (ev.kind === 'dart') this.dartsSinceStart++;
               events.push(ev);
@@ -388,52 +454,42 @@ export class DartDetector {
     } finally {
       this.prev?.delete();
       this.prev = cur;
+      curC.delete();
       this.debug.processMs = performance.now() - t0;
     }
     return events;
   }
 
   /** L'image ressemble-t-elle à celle du début de la volée (aucune fléchette plantée) ? */
-  private isClean(cur: any): boolean {
+  private isClean(cur: any, curC: any): boolean {
     if (!this.volleyStart) return false;
     const cv = this.cv;
-    const norm = new cv.Mat();
-    const d = new cv.Mat();
+    const dd = this.diffTo(this.volleyStart, this.volleyStartC, cur, curC);
+    dd.m.delete();
+    const d = dd.g;
     try {
-      const mRef = cv.mean(this.volleyStart, this.zone)[0];
-      const mCur = cv.mean(cur, this.zone)[0];
-      cur.convertTo(norm, -1, mCur > 1 ? mRef / mCur : 1, 0);
-      cv.absdiff(this.volleyStart, norm, d);
       cv.threshold(d, d, this.params.diffThreshold, 255, cv.THRESH_BINARY);
-      cv.bitwise_and(d, this.zone, d);
       cv.morphologyEx(d, d, cv.MORPH_OPEN, this.kOpen);
       const changed = cv.countNonZero(d);
       this.debug.cleanDiff = changed;
       return changed < this.minArea;
     } finally {
-      norm.delete();
       d.delete();
     }
   }
 
-  private analyse(cur: any): DetectorEvent | null {
+  private analyse(cur: any, curC: any): DetectorEvent | null {
     const cv = this.cv;
     const t0 = performance.now();
-    const norm = new cv.Mat();
-    const absd = new cv.Mat();
+    const dd = this.diffTo(this.ref, this.refC, cur, curC);
+    const absd = dd.g;
+    const absdM = dd.m;
     const diff = new cv.Mat();
+
     const labels = new cv.Mat();
     const stats = new cv.Mat();
     const centroids = new cv.Mat();
     try {
-      // Égalise la luminosité (exposition automatique de la caméra).
-      const mRef = cv.mean(this.ref, this.zone)[0];
-      const mCur = cv.mean(cur, this.zone)[0];
-      const gain = mCur > 1 ? mRef / mCur : 1;
-      cur.convertTo(norm, -1, gain, 0);
-
-      cv.absdiff(this.ref, norm, absd);
-      cv.bitwise_and(absd, this.zone, absd);
       cv.threshold(absd, diff, this.params.diffThreshold, 255, cv.THRESH_BINARY);
       cv.morphologyEx(diff, diff, cv.MORPH_OPEN, this.kOpen);
       cv.morphologyEx(diff, diff, cv.MORPH_CLOSE, this.kClose);
@@ -459,7 +515,7 @@ export class DartDetector {
       }
       if (!main || mainArea < this.minArea / 3) {
         // Rien (ou du bruit) : la référence suit les petits changements de lumière.
-        this.replaceRef(cur);
+        this.replaceRef(cur, curC);
         return { kind: 'ignored', reason: 'small', area: mainArea };
       }
 
@@ -490,7 +546,7 @@ export class DartDetector {
       const area = xy.length / 2;
       this.debug.area = area;
       if (area < this.minArea) {
-        this.replaceRef(cur);
+        this.replaceRef(cur, curC);
         return { kind: 'ignored', reason: 'small', area };
       }
       this.debug.contour = xy;
@@ -500,7 +556,7 @@ export class DartDetector {
         return Math.hypot(b.x, b.y);
       };
       const tip = (outDir && locateDart(xy, outDir)) || findTip({ xy, outDir, boardRadius: radius });
-      this.replaceRef(cur);
+      this.replaceRef(cur, curC);
       if (!tip) return { kind: 'ignored', reason: 'no-tip', area };
       // Trop court pour une fléchette (reflet, poussière, petit déplacement d'ombre).
       const expected = this.cam ? expectedDartLength(this.cam, applyH(F2B, mainCenter)) : 0;
@@ -510,8 +566,11 @@ export class DartDetector {
       }
 
       // Le bout du fût est souvent peu contrasté : on prolonge avec un seuil plus bas.
-      const ext = extendTip(tip.tip, tip.axis, absd.data, absd.cols, absd.rows, Math.max(6, this.params.diffThreshold * 0.45));
+      // Couleur incluse : un fût gris reste visible quand il traverse un anneau rouge ou vert.
+      const ext = extendTip(tip.tip, tip.axis, absdM.data, absdM.cols, absdM.rows, Math.max(6, this.params.diffThreshold * 0.45), 60, 8);
       if (radius(ext.tip) <= RADII.doubleOuter + 40) tip.tip = ext.tip;
+      // Le flou (5×5) étale le changement ≈ 1,5 px au-delà du vrai bout : on le retire.
+      tip.tip = { x: tip.tip.x + tip.axis.x * TIP_BLUR_PX, y: tip.tip.y + tip.axis.y * TIP_BLUR_PX };
       this.debug.tip = tip;
 
       const board = applyH(F2B, tip.tip);
@@ -525,9 +584,10 @@ export class DartDetector {
         confidence: tip.confidence,
       };
     } finally {
-      norm.delete();
       absd.delete();
+      absdM.delete();
       diff.delete();
+
       labels.delete();
       stats.delete();
       centroids.delete();
@@ -535,16 +595,20 @@ export class DartDetector {
     }
   }
 
-  private replaceRef(cur: any) {
+  private replaceRef(cur: any, curC: any) {
     this.ref?.delete();
+    this.refC?.delete();
     this.ref = cur.clone();
+    this.refC = curC.clone();
   }
 
   dispose() {
     this.prev?.delete();
     this.ref?.delete();
+    this.refC?.delete();
     this.volleyStart?.delete();
-    this.volleyStart = null;
+    this.volleyStartC?.delete();
+    this.volleyStart = this.volleyStartC = this.refC = null;
     this.zone.delete();
     this.kOpen.delete();
     this.kClose.delete();

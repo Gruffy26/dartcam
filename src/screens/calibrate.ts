@@ -95,7 +95,15 @@ export function calibrateScreen(nav: Nav): Screen {
     updateUi();
   }
 
+  cam.enablePinch(overlay);
   cam.onChange((reason) => {
+    if (reason === 'pinch') {
+      // Deux doigts : c'est un zoom, pas la pose d'un repère.
+      if (drag?.mode === 'place') points.pop();
+      drag = null;
+      updateUi();
+      return;
+    }
     if (reason === 'source') {
       points = [];
       // La première image peut mettre un instant à arriver.
@@ -161,13 +169,13 @@ export function calibrateScreen(nav: Nav): Screen {
     schema.innerHTML = miniBoardSvg(done ? null : target.board);
     if (auto.state === 'searching' && n === 0) {
       stepText.textContent = auto.text;
-      hintText.textContent = 'Garde toute la cible dans l’image. Tu peux aussi poser les repères toi-même.';
+      hintText.textContent = 'Garde toute la cible dans l’image (pince à deux doigts pour zoomer). Tu peux aussi poser les repères toi-même.';
     } else if (!done) {
       stepText.textContent = `Repère ${n + 1}/5 : ${target.label}`;
       hintText.textContent =
         (auto.state === 'failed' ? auto.text + ' — ' : '') +
         (n === 0
-          ? 'Règle d’abord le zoom. Pose le doigt sur la cible : une loupe t’aide à viser, lâche au bon endroit.'
+          ? 'Pince avec deux doigts pour zoomer. Pose un doigt sur la cible : une loupe t’aide à viser, lâche au bon endroit.'
           : 'Tu peux faire glisser un repère déjà posé pour le corriger.');
     } else {
       stepText.textContent =
@@ -181,7 +189,6 @@ export function calibrateScreen(nav: Nav): Screen {
     }
     if (done) hintText.classList.toggle('warn', (error() ?? 0) >= 5);
     else hintText.classList.remove('warn');
-    cam.zoomBar.classList.toggle('hidden', n > 0);
     autoBtn.classList.toggle('hidden', n > 0 && n < CALIB_TARGETS.length);
     autoBtn.disabled = auto.state === 'searching';
     undoBtn.classList.toggle('hidden', n === 0 || done);
@@ -197,7 +204,7 @@ export function calibrateScreen(nav: Nav): Screen {
 
   overlay.addEventListener('pointerdown', (e) => {
     const f = cam.frame();
-    if (!f || drag) return;
+    if (!f || drag || cam.pinching) return;
     const sp = local(e);
     let best = -1;
     let bestD = points.length >= CALIB_TARGETS.length ? GRAB_RADIUS * 2 : GRAB_RADIUS;
@@ -228,7 +235,7 @@ export function calibrateScreen(nav: Nav): Screen {
 
   overlay.addEventListener('pointermove', (e) => {
     const f = cam.frame();
-    if (!drag || !f) return;
+    if (!drag || !f || cam.pinching) return;
     const sp = local(e);
     const s =
       drag.mode === 'place'

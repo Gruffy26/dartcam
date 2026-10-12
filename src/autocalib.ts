@@ -15,6 +15,7 @@ import { boardPoint, RADII, SECTOR_ANGLE, SECTORS } from './board';
 import { CALIB_TARGETS } from './calibration';
 import { applyH, computeHomography, invertH, type Mat3, type Pt } from './homography';
 import type { CV } from './opencv';
+import { rotateCalibration, uprightShift } from './orientation';
 
 export const NONE = 0;
 export const RED = 1;
@@ -537,6 +538,11 @@ export function autoCalibrate(cv: CV, img: RgbaImage, debug?: AutoCalibDebug): A
     H = solved.H;
   }
   if (!result) return { ok: false, reason: 'La cible est trop floue ou trop de biais pour être mesurée.' };
+
+  // Orientation : le 20 doit être vraiment en haut (position 3D de la caméra), et non
+  // seulement « le plus haut à l'image », faux en forte perspective.
+  const up = uprightShift(result.H, img.width, img.height);
+  if (up.shift) result.H = rotateCalibration(result.H, up.shift);
 
   const colorMatch = colorMatchScore(cls, img.width, img.height, result.H);
   if (colorMatch < 0.8 || result.errorMm > 3) {

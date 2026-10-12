@@ -31,6 +31,10 @@ describe('calibration automatique', () => {
     ['caméra à gauche, 45°, un peu au-dessus', { yawDeg: -45, pitchDeg: 8 }],
     ['50°, téléphone penché de 6°, cible décentrée', { yawDeg: 50, rollDeg: 6, shift: { x: 30, y: -60 } }],
     ['30°, plus loin', { yawDeg: 30, distance: 1300 }],
+    // Forte perspective : « le secteur rouge le plus haut à l'image » n'est plus le 20.
+    ['caméra à droite 50°, bien en dessous (25°)', { yawDeg: 50, pitchDeg: -25 }],
+    ['caméra à gauche 55°, au-dessus (20°)', { yawDeg: -55, pitchDeg: 20 }],
+    ['caméra à droite 45°, téléphone penché de 12°', { yawDeg: 45, pitchDeg: -15, rollDeg: 12 }],
   ];
 
   for (const [name, p] of cases) {

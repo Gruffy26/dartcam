@@ -8,10 +8,22 @@ import { DartDetector, type DetectorEvent } from './detector';
 const W = 480;
 const H = 854;
 // Comme chez l'utilisateur : téléphone en portrait, en bas à gauche de la cible.
-const POSE: CameraPose = { yawDeg: -35, pitchDeg: -20, distance: 950, focal: 760, width: W, height: H };
+// Positions de caméra testées (degrés) : gauche / droite, dessous / dessus, jusqu'à 55°.
+// (Exclue : caméra de face au-dessus, dans l'axe des lancers — la fléchette pointe vers l'objectif.)
+const POSES: [number, number][] = [
+  [-35, -20], // comme chez l'utilisateur : en bas à gauche
+  [35, -20], // en bas à droite
+  [35, 20],
+  [-35, 20],
+  [50, -25],
+  [-50, -25],
+  [55, 15],
+  [0, -15],
+];
 
 describe('détecteur sur une vidéo de synthèse', () => {
-  it('3 fléchettes successives malgré une légère vibration, puis retrait et volée suivante', async () => {
+  it.each(POSES)('caméra à %i° / %i° : 3 fléchettes malgré une vibration, retrait, volée suivante', async (yaw, pitch) => {
+    const POSE: CameraPose = { yawDeg: yaw, pitchDeg: pitch, distance: 950, focal: 760, width: W, height: H };
     const cv = await loadCvForTests();
     const tips = [
       boardPoint(103, sectorCenterAngle(20)), // T20

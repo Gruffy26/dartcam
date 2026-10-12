@@ -79,8 +79,8 @@ export function gameScreen(nav: Nav): Screen {
   cam.el.append(note, loupe, sheet);
   if (debugMode) cam.el.append(insets);
   cam.el.querySelector('.topbar')!.insertBefore(boardBtn, cam.el.querySelector('.topbar')!.lastChild);
-  // Pas de zoom pendant la partie : le changer rendrait la calibration fausse.
-  cam.zoomBar.classList.add('hidden');
+  // Zoom en pinçant à deux doigts : la cible est ensuite redétectée automatiquement.
+  cam.enablePinch(overlay);
   cam.dock.append(scorePanel, h('div', { class: 'calib-actions small' }, missBtn, undoBtn, clearBtn));
   if (debugMode) cam.dock.append(stats);
 
@@ -142,7 +142,23 @@ export function gameScreen(nav: Nav): Screen {
     detector = null;
   }
 
+  let zoomTimer = 0;
   cam.onChange((reason) => {
+    if (reason === 'pinch') {
+      aim = null;
+      loupe.classList.add('hidden');
+      return;
+    }
+    if (reason === 'zoom') {
+      // L'image a changé : ancienne calibration inutilisable, nouvelle détection après le geste.
+      cal = null;
+      dropDetector();
+      run++;
+      setNote('🔍 Zoom… la cible sera redétectée.');
+      clearTimeout(zoomTimer);
+      zoomTimer = window.setTimeout(() => void findBoard(), 800);
+      return;
+    }
     if (reason === 'source') {
       cal = null;
       dropDetector();
@@ -242,7 +258,7 @@ export function gameScreen(nav: Nav): Screen {
   };
 
   overlay.addEventListener('pointerdown', (e) => {
-    if (!detector || !cam.frame()) return;
+    if (!detector || !cam.frame() || cam.pinching) return;
     hideSheet();
     aim = local(e);
     try {
@@ -253,7 +269,7 @@ export function gameScreen(nav: Nav): Screen {
     e.preventDefault();
   });
   overlay.addEventListener('pointermove', (e) => {
-    if (!aim) return;
+    if (!aim || cam.pinching) return;
     aim = local(e);
     e.preventDefault();
   });
@@ -576,6 +592,7 @@ export function gameScreen(nav: Nav): Screen {
     dispose() {
       disposed = true;
       clearTimeout(timer);
+      clearTimeout(zoomTimer);
       cancelAnimationFrame(raf);
       dropDetector();
       cam.dispose();

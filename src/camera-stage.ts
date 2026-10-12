@@ -20,41 +20,38 @@ export interface FrameInfo {
   screen: Rect;
 }
 
+/** « pinch » : début d'un pincement (annuler les gestes à un doigt en cours). */
+export type ChangeReason = 'source' | 'zoom' | 'pinch';
+
 export interface CameraStage {
   el: HTMLElement;
   /** Zone en bas de l'écran où chaque écran ajoute ses boutons / infos (sous la barre de zoom). */
   dock: HTMLElement;
-  zoomBar: HTMLElement;
+  /** Pincement à deux doigts en cours (les écrans ignorent alors le toucher à un doigt). */
+  readonly pinching: boolean;
+  /** Active le zoom en pinçant à deux doigts sur cet élément. */
+  enablePinch(target: HTMLElement): void;
   readonly source: FrameSource | null;
   frame(): FrameInfo | null;
   zoomValue(): number;
   /** Appelé quand la source change (nouvelle caméra, nouvelle vidéo) ou que le zoom change. */
-  onChange(cb: (reason: 'source' | 'zoom') => void): void;
+  onChange(cb: (reason: ChangeReason) => void): void;
   dispose(): void;
 }
 
 export function createCameraStage(nav: Nav): CameraStage {
   let source: FrameSource | null = null;
   let disposed = false;
-  const listeners: ((reason: 'source' | 'zoom') => void)[] = [];
-  const emit = (reason: 'source' | 'zoom') => listeners.forEach((cb) => cb(reason));
+  const listeners: ((reason: ChangeReason) => void)[] = [];
+  const emit = (reason: ChangeReason) => listeners.forEach((cb) => cb(reason));
 
   const stage = h('div', { class: 'stage' });
   const message = h('div', { class: 'message hidden' });
   const fileInput = h('input', { type: 'file', accept: 'video/*,.mov,.mp4', class: 'hidden' });
   const sourceBtn = h('button', { class: 'pill' });
-  const zoomSlider = h('input', { type: 'range', class: 'zoom-slider', 'aria-label': 'Zoom' });
-  const zoomLabel = h('span', { class: 'zoom-value' });
-  const zoomMode = h('small', { class: 'zoom-mode' });
-  const zoomBar = h(
-    'div',
-    { class: 'zoombar no-zoom' },
-    h('button', { class: 'zoom-btn', 'aria-label': 'Dézoomer', onclick: () => void stepZoom(-1) }, '−'),
-    zoomSlider,
-    h('button', { class: 'zoom-btn', 'aria-label': 'Zoomer', onclick: () => void stepZoom(1) }, '+'),
-    h('div', { class: 'zoom-info' }, zoomLabel, zoomMode),
-  );
-  const dock = h('div', { class: 'dock' }, zoomBar);
+  // Indicateur de zoom affiché pendant le pincement (comme l'appareil photo).
+  const zoomBadge = h('div', { class: 'zoom-badge hidden' });
+  const dock = h('div', { class: 'dock' });
 
   const el = h(
     'main',
@@ -67,6 +64,7 @@ export function createCameraStage(nav: Nav): CameraStage {
       sourceBtn,
     ),
     dock,
+    zoomBadge,
     message,
     fileInput,
   );
@@ -109,37 +107,77 @@ export function createCameraStage(nav: Nav): CameraStage {
     }
   }
 
-  // --- Zoom ---------------------------------------------------------------
+  // --- Zoom (pincement à deux doigts) ---------------------------------------
   function refreshZoom() {
     const z = source?.zoom;
-    zoomBar.classList.toggle('no-zoom', !z);
     if (!z || !source) return;
-    zoomSlider.min = String(z.min);
-    zoomSlider.max = String(z.max);
-    zoomSlider.step = String(z.step);
-    zoomSlider.value = String(z.value);
-    zoomLabel.textContent = formatZoom(z.value);
-    zoomMode.textContent = z.mode === 'capteur' ? 'zoom caméra' : 'zoom numérique';
     // Zoom numérique : on agrandit l'affichage autour du centre, exactement comme
     // le recadrage appliqué à l'analyse (cropRect).
     source.video.style.transform = z.digital > 1 ? `scale(${z.digital})` : '';
   }
 
+  let badgeTimer = 0;
+  function showBadge() {
+    const z = source?.zoom;
+    if (!z) return;
+    zoomBadge.textContent = formatZoom(z.value);
+    zoomBadge.classList.remove('hidden');
+    clearTimeout(badgeTimer);
+    badgeTimer = window.setTimeout(() => zoomBadge.classList.add('hidden'), 1200);
+  }
+
+  let applying = false;
+  let pendingZoom: number | null = null;
+  /** Applique le zoom (une demande à la fois : la caméra met quelques ms à suivre). */
   async function setZoom(value: number) {
     const z = source?.zoom;
     if (!z) return;
-    await z.set(value);
+    pendingZoom = value;
+    if (applying) return;
+    applying = true;
+    while (pendingZoom != null) {
+      const v = pendingZoom;
+      pendingZoom = null;
+      await z.set(Math.round(v * 10) / 10);
+      refreshZoom();
+      showBadge();
+    }
+    applying = false;
     updateSettings({ zoom: z.value });
-    refreshZoom();
     emit('zoom');
   }
 
-  function stepZoom(dir: 1 | -1) {
-    const z = source?.zoom;
-    if (z) return setZoom(Math.round((z.value + dir * 0.5) * 10) / 10);
+  const pointers = new Map<number, { x: number; y: number }>();
+  let pinch: { d0: number; z0: number } | null = null;
+  const spread = () => {
+    const [a, b] = [...pointers.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+  function enablePinch(target: HTMLElement) {
+    target.addEventListener('pointerdown', (e) => {
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 2 && source?.zoom) {
+        pinch = { d0: Math.max(10, spread()), z0: source.zoom.value };
+        emit('pinch');
+        showBadge();
+      }
+    });
+    target.addEventListener('pointermove', (e) => {
+      if (!pointers.has(e.pointerId)) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch && pointers.size === 2 && source?.zoom) {
+        const z = source.zoom;
+        const v = Math.min(z.max, Math.max(z.min, (pinch.z0 * spread()) / pinch.d0));
+        void setZoom(v);
+      }
+    });
+    const up = (e: PointerEvent) => {
+      pointers.delete(e.pointerId);
+      if (pointers.size < 2) pinch = null;
+    };
+    target.addEventListener('pointerup', up);
+    target.addEventListener('pointercancel', up);
   }
-
-  zoomSlider.addEventListener('input', () => void setZoom(Number(zoomSlider.value)));
 
   // --- Source ---------------------------------------------------------------
   async function start() {
@@ -205,7 +243,10 @@ export function createCameraStage(nav: Nav): CameraStage {
   return {
     el,
     dock,
-    zoomBar,
+    get pinching() {
+      return pinch != null || pointers.size >= 2;
+    },
+    enablePinch,
     get source() {
       return source;
     },

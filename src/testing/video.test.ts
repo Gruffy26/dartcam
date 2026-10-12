@@ -207,3 +207,20 @@ run('vidéo réelle — détection des fléchettes', () => {
     det.dispose();
   }, 600000);
 });
+
+run('vidéo réelle — vue de face', () => {
+  it.skipIf(!process.env.FRONT)('vue de face', async () => {
+    const { writePng } = await import('./png');
+    const { rectifyGray } = await import('../rectify');
+    const cv = await loadCvForTests();
+    const i = Number(process.env.FRONT);
+    const img = loadFrame(i);
+    const res = autoCalibrate(cv, img);
+    if (!res.ok) throw new Error(res.reason);
+    const N = 450;
+    const g = rectifyGray(img, res.H, N);
+    const out = new Uint8ClampedArray(N * N * 4);
+    g.forEach((v, k) => { const c = Number.isNaN(v) ? 255 : v; out[4 * k] = Number.isNaN(v) ? 255 : c; out[4 * k + 1] = Number.isNaN(v) ? 0 : c; out[4 * k + 2] = Number.isNaN(v) ? 0 : c; out[4 * k + 3] = 255; });
+    writePng(join(process.env.OUT_DIR!, `front-${i}.png`), out, N, N);
+  }, 60000);
+});
