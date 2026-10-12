@@ -114,3 +114,68 @@ run('vidéo réelle — superposition', () => {
     }
   }, 600000);
 });
+
+run('vidéo réelle — détection des fléchettes', () => {
+  it.skipIf(!process.env.DETECT)('rejoue la vidéo', async () => {
+    const { DartDetector } = await import('../detector/detector');
+    const cv = await loadCvForTests();
+    const meta = JSON.parse(readFileSync(join(dir!, 'meta.json'), 'utf8'));
+    const calFrame = Number(process.env.CALIB_FRAME ?? 30);
+    const cal = autoCalibrate(cv, loadFrame(calFrame));
+    if (!cal.ok) throw new Error(cal.reason);
+    const det = new DartDetector(cv, { frameToBoard: cal.H, width: meta.width, height: meta.height });
+    console.log('caméra', JSON.stringify({ f: det.cam?.focal.toFixed(0), estimée: det.cam?.focalEstimated, normal: det.cam?.normalSign }));
+    const dt = 1000 / meta.fps;
+    const darts: string[] = [];
+    let total = 0;
+    let worst = 0;
+    for (let i = calFrame; i < meta.count; i++) {
+      const frame = loadFrame(i);
+      const t0 = performance.now();
+      const evs = det.process(frame, i * dt);
+      const ms = performance.now() - t0;
+      total += ms;
+      worst = Math.max(worst, ms);
+      if (process.env.MOTION) console.log(i, 'mvt', det.debug.motion, '/', det.debug.motionLimit.toFixed(0), det.debug.state, det.debug.shift.x.toFixed(2), det.debug.shift.y.toFixed(2));
+      for (const ev of evs) {
+        if (ev.kind === 'dart') {
+          darts.push(ev.score.libelle);
+          if (process.env.TIPDBG && Number(process.env.TIPDBG) === i) {
+            const xy = det.debug.contour!;
+            const t = det.debug.tip!;
+            const pts: [number, number, number][] = [];
+            for (let k = 0; k < xy.length; k += 2) pts.push([xy[k], xy[k + 1], (xy[k] - t.tip.x) * t.axis.x + (xy[k + 1] - t.tip.y) * t.axis.y]);
+            pts.sort((a, b) => a[2] - b[2]);
+            console.log('axe', t.axis, 'pointe', t.tip, 'n', pts.length);
+            console.log('extrêmes côté pointe', JSON.stringify(pts.slice(0, 15)));
+          }
+          if (process.env.OUT_DIR) {
+            const { writePng } = await import('./png');
+            const img = loadFrame(i);
+            const out = new Uint8ClampedArray(img.data);
+            const m = det.debug.mask!;
+            for (let p = 0; p < m.data.length; p++) if (m.data[p]) { out[4 * p] = 255; out[4 * p + 1] = out[4 * p + 1] / 2; out[4 * p + 2] = 255; }
+            const dot = (q: { x: number; y: number }, c: number[]) => { for (let dy = -3; dy <= 3; dy++) for (let dx = -3; dx <= 3; dx++) { const o = ((Math.round(q.y) + dy) * img.width + Math.round(q.x) + dx) * 4; out[o] = c[0]; out[o + 1] = c[1]; out[o + 2] = c[2]; } };
+            dot(ev.tip, [255, 0, 0]);
+            dot(ev.tail, [0, 0, 255]);
+            // recadrage autour de la fléchette
+            const x0 = Math.max(0, Math.round(Math.min(ev.tip.x, ev.tail.x) - 80)), y0 = Math.max(0, Math.round(Math.min(ev.tip.y, ev.tail.y) - 80));
+            const x1 = Math.min(img.width, Math.round(Math.max(ev.tip.x, ev.tail.x) + 80)), y1 = Math.min(img.height, Math.round(Math.max(ev.tip.y, ev.tail.y) + 80));
+            const cw = x1 - x0, ch = y1 - y0, crop = new Uint8ClampedArray(cw * 2 * ch * 4);
+            for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+              const so = ((y0 + y) * img.width + x0 + x) * 4;
+              const a = (y * cw * 2 + x) * 4, b = (y * cw * 2 + cw + x) * 4;
+              for (let k = 0; k < 4; k++) { crop[a + k] = img.data[so + k]; crop[b + k] = out[so + k]; }
+            }
+            writePng(join(process.env.OUT_DIR, `dart-${i}.png`), crop, cw * 2, ch);
+          }
+          console.log(i, 'FLÉCHETTE', ev.score.libelle, `pointe=(${ev.tip.x.toFixed(0)},${ev.tip.y.toFixed(0)})`, `empennage=(${ev.tail.x.toFixed(0)},${ev.tail.y.toFixed(0)})`, `r=${Math.hypot(ev.board.x, ev.board.y).toFixed(0)}mm`, `aire=${ev.area.toFixed(0)}`, `conf=${ev.confidence.toFixed(2)}`, JSON.stringify(det.debug.tip?.votes));
+        } else if (ev.kind === 'ignored' && ev.reason !== 'small') console.log(i, 'ignoré', ev.reason, ev.area.toFixed(0));
+        else if (ev.kind === 'reference') console.log(i, 'référence');
+      }
+    }
+    console.log('TEMPS', `moyenne ${(total / (meta.count - calFrame)).toFixed(1)} ms, pire ${worst.toFixed(1)} ms par image`);
+    console.log('RÉSULTAT', darts.join(', '), `(min ${det.debug.minArea.toFixed(0)} max ${det.debug.maxArea.toFixed(0)} px²)`);
+    det.dispose();
+  }, 600000);
+});
