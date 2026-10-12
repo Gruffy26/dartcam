@@ -7,12 +7,13 @@ function calibrationStatus(): string {
   const source = getSettings().source;
   const cal = loadCalibration(source);
   const what = source === 'camera' ? 'Caméra' : 'Vidéo de test';
-  if (!cal) return `${what} : cible pas encore calibrée`;
+  if (!cal) return `${what} : la cible sera détectée automatiquement à l’ouverture de la caméra`;
   const d = new Date(cal.createdAt);
   const when = Number.isNaN(d.getTime())
     ? ''
     : ` le ${d.toLocaleDateString('fr-FR')} à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
-  return `${what} : cible calibrée${when} ✓`;
+  const how = cal.method === 'auto' ? 'détectée automatiquement' : 'calibrée à la main';
+  return `${what} : cible ${how}${when} ✓ (redétectée à chaque partie)`;
 }
 
 export function homeScreen(nav: Nav): HTMLElement {

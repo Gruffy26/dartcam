@@ -8,6 +8,7 @@ import {
   tryBoardToFrame,
   type Calibration,
 } from '../calibration';
+import { detectBoard } from '../auto-run';
 import { createCameraStage } from '../camera-stage';
 import { miniBoardSvg } from '../board-svg';
 import { h } from '../dom';
@@ -31,6 +32,16 @@ export function calibrateScreen(nav: Nav): Screen {
   let points: Pt[] = [];
   let drag: { index: number; mode: 'place' | 'move'; finger: Pt; start: Pt } | null = null;
   let raf = 0;
+  let disposed = false;
+  /** Où en est la détection automatique (affichée dans la consigne). */
+  let auto: { state: 'idle' | 'searching' | 'found' | 'failed'; text: string; errorMm?: number } = {
+    state: 'idle',
+    text: '',
+  };
+  let method: 'auto' | 'manual' = 'manual';
+  let run = 0;
+  let touchedSinceAuto = false;
+  let zoomTimer = 0;
 
   const overlay = h('canvas', { class: 'overlay interactive' });
   const loupe = h('canvas', { class: 'loupe hidden' });
@@ -39,10 +50,11 @@ export function calibrateScreen(nav: Nav): Screen {
   const hintText = h('div', { class: 'calib-hint' });
   const card = h('div', { class: 'calib-card' }, schema, h('div', {}, stepText, hintText));
 
+  const autoBtn = h('button', { class: 'big', onclick: () => void runAuto() }, 'Détection auto');
   const undoBtn = h('button', { class: 'big', onclick: () => undo() }, 'Annuler le repère');
   const restartBtn = h('button', { class: 'big', onclick: () => restart() }, 'Recommencer');
   const validateBtn = h('button', { class: 'big primary', onclick: () => validate() }, 'Valider');
-  const actions = h('div', { class: 'calib-actions' }, undoBtn, restartBtn, validateBtn);
+  const actions = h('div', { class: 'calib-actions' }, autoBtn, undoBtn, restartBtn, validateBtn);
 
   cam.el.insertBefore(overlay, cam.el.children[1]);
   cam.el.append(card, loupe);
@@ -61,6 +73,27 @@ export function calibrateScreen(nav: Nav): Screen {
     const cal = loadCalibration(kind);
     points = cal && !calibrationMismatch(cal, { zoom: cam.zoomValue(), aspect: a }) ? cal.points.map((p) => ({ ...p })) : [];
     updateUi();
+    void runAuto();
+  }
+
+  // Détection automatique : place les 5 repères toute seule ; on peut ensuite les ajuster.
+  async function runAuto() {
+    const id = ++run;
+    touchedSinceAuto = false;
+    auto = { state: 'searching', text: '🔎 Recherche automatique de la cible…' };
+    updateUi();
+    const res = await detectBoard(cam, () => disposed || id !== run, 4);
+    if (disposed || id !== run) return;
+    if (res.ok) {
+      auto = { state: 'found', text: '✅ Cible détectée automatiquement.', errorMm: res.errorMm };
+      if (!touchedSinceAuto) {
+        points = res.points;
+        method = 'auto';
+      }
+    } else {
+      auto = { state: 'failed', text: `Détection automatique impossible : ${res.reason}` };
+    }
+    updateUi();
   }
 
   cam.onChange((reason) => {
@@ -71,6 +104,8 @@ export function calibrateScreen(nav: Nav): Screen {
       wait();
     } else {
       points = []; // le zoom a changé : les repères ne correspondent plus
+      clearTimeout(zoomTimer);
+      zoomTimer = window.setTimeout(() => void runAuto(), 800);
     }
     updateUi();
   });
@@ -80,7 +115,10 @@ export function calibrateScreen(nav: Nav): Screen {
     updateUi();
   }
   function restart() {
+    run++; // abandonne une recherche automatique en cours
+    auto = { state: 'idle', text: '' };
     points = [];
+    method = 'manual';
     updateUi();
   }
 
@@ -95,6 +133,7 @@ export function calibrateScreen(nav: Nav): Screen {
       zoom: cam.zoomValue(),
       aspect: a,
       createdAt: new Date().toISOString(),
+      method,
     };
     if (!saveCalibration(cal)) {
       hintText.textContent = 'Impossible d’enregistrer la calibration sur ce téléphone (stockage bloqué ?).';
@@ -104,6 +143,9 @@ export function calibrateScreen(nav: Nav): Screen {
   }
 
   function error(): number | null {
+    // Repères issus de la détection automatique : ils sont exactement cohérents entre eux,
+    // la précision utile est celle mesurée par la détection.
+    if (method === 'auto' && auto.errorMm != null) return auto.errorMm;
     const a = aspect();
     if (a == null || points.length < CALIB_TARGETS.length) return null;
     try {
@@ -118,14 +160,19 @@ export function calibrateScreen(nav: Nav): Screen {
     const done = n >= CALIB_TARGETS.length;
     const target = CALIB_TARGETS[Math.min(n, CALIB_TARGETS.length - 1)];
     schema.innerHTML = miniBoardSvg(done ? null : target.board);
-    if (!done) {
+    if (auto.state === 'searching' && n === 0) {
+      stepText.textContent = auto.text;
+      hintText.textContent = 'Garde toute la cible dans l’image. Tu peux aussi poser les repères toi-même.';
+    } else if (!done) {
       stepText.textContent = `Repère ${n + 1}/5 : ${target.label}`;
       hintText.textContent =
-        n === 0
+        (auto.state === 'failed' ? auto.text + ' — ' : '') +
+        (n === 0
           ? 'Règle d’abord le zoom. Pose le doigt sur la cible : une loupe t’aide à viser, lâche au bon endroit.'
-          : 'Tu peux faire glisser un repère déjà posé pour le corriger.';
+          : 'Tu peux faire glisser un repère déjà posé pour le corriger.');
     } else {
-      stepText.textContent = 'Vérifie que le dessin jaune colle à la cible';
+      stepText.textContent =
+        method === 'auto' ? '✅ Cible détectée : vérifie le dessin jaune' : 'Vérifie que le dessin jaune colle à la cible';
       const e = error();
       const quality = e == null ? '' : e < 2 ? ' — très bien' : e < 5 ? ' — correct' : ' — un repère semble mal placé';
       hintText.textContent =
@@ -136,6 +183,8 @@ export function calibrateScreen(nav: Nav): Screen {
     if (done) hintText.classList.toggle('warn', (error() ?? 0) >= 5);
     else hintText.classList.remove('warn');
     cam.zoomBar.classList.toggle('hidden', n > 0);
+    autoBtn.classList.toggle('hidden', n > 0 && n < CALIB_TARGETS.length);
+    autoBtn.disabled = auto.state === 'searching';
     undoBtn.classList.toggle('hidden', n === 0 || done);
     restartBtn.classList.toggle('hidden', n === 0);
     validateBtn.classList.toggle('hidden', !done);
@@ -161,6 +210,8 @@ export function calibrateScreen(nav: Nav): Screen {
         best = i;
       }
     });
+    touchedSinceAuto = true;
+    method = 'manual';
     if (best >= 0) {
       drag = { index: best, mode: 'move', finger: sp, start: frameToScreen(f.screen, points[best]) };
     } else if (points.length < CALIB_TARGETS.length) {
@@ -298,6 +349,7 @@ export function calibrateScreen(nav: Nav): Screen {
   return {
     el: cam.el,
     dispose() {
+      disposed = true;
       cancelAnimationFrame(raf);
       cam.dispose();
     },

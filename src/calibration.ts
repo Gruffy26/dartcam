@@ -36,6 +36,8 @@ export interface Calibration {
   /** Rapport largeur / hauteur du cadre analysé (détecte un changement d'orientation). */
   aspect: number;
   createdAt: string;
+  /** Détectée automatiquement ou placée à la main. */
+  method?: 'auto' | 'manual';
 }
 
 /** Homographie cadre (pixels d'une image de taille W×H) → cible (mm). */

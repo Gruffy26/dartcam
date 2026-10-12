@@ -1,4 +1,12 @@
-import { boardOverlay, calibrationMismatch, loadCalibration, tryBoardToFrame } from '../calibration';
+import { calibrationStillValid, detectBoard } from '../auto-run';
+import {
+  boardOverlay,
+  calibrationMismatch,
+  loadCalibration,
+  saveCalibration,
+  tryBoardToFrame,
+  type Calibration,
+} from '../calibration';
 import { createCameraStage } from '../camera-stage';
 import { h } from '../dom';
 import { frameToScreen } from '../frameview';
@@ -12,46 +20,87 @@ import { formatZoom } from '../zoom';
 export const ANALYSIS_WIDTH = 640;
 const ANALYSIS_INTERVAL_MS = 100; // ≈10 analyses par seconde
 
-// Écran de partie, provisoire : vérifie que la calibration est toujours alignée
-// et mesure la vitesse d'analyse. La détection des fléchettes arrive à l'étape 4.
+// Écran de partie, provisoire : trouve la cible automatiquement à l'ouverture,
+// affiche la calibration et mesure la vitesse d'analyse.
+// La détection des fléchettes arrive à l'étape 4.
 export function viewerScreen(nav: Nav): Screen {
   const cam = createCameraStage(nav);
   let disposed = false;
   let timer = 0;
   let raf = 0;
+  /** Calibration utilisée pour cette session, ou null tant que la cible n'est pas trouvée. */
+  let cal: Calibration | null = null;
+  let run = 0; // identifiant de la recherche en cours (pour ignorer les anciennes)
 
   const overlay = h('canvas', { class: 'overlay' });
   const note = h('div', { class: 'note' });
   const stats = h('div', { class: 'stats' }, 'Démarrage…');
+  const redetectBtn = h('button', { class: 'big', onclick: () => void findBoard() }, 'Redétecter la cible');
+  const manualBtn = h('button', { class: 'big', onclick: () => nav('calibrate') }, 'Ajuster à la main');
   cam.el.insertBefore(overlay, cam.el.children[1]);
   cam.el.append(note);
   // Pas de zoom pendant la partie : le changer rendrait la calibration fausse.
   cam.zoomBar.classList.add('hidden');
-  cam.dock.append(
-    h('button', { class: 'big', onclick: () => nav('calibrate') }, 'Recalibrer'),
-    stats,
-  );
+  cam.dock.append(h('div', { class: 'calib-actions' }, redetectBtn, manualBtn), stats);
 
-  function calibrationState() {
-    const f = cam.frame();
-    const kind = cam.source?.kind;
-    if (!f || !kind) return { cal: null, problem: null };
-    const cal = loadCalibration(kind);
-    if (!cal) return { cal: null, problem: 'Pas encore de calibration pour cette source.' };
-    const problem = calibrationMismatch(cal, { zoom: cam.zoomValue(), aspect: f.crop.w / f.crop.h });
-    return { cal, problem };
+  function setNote(text: string, warn = false) {
+    note.textContent = text;
+    note.classList.toggle('warn', warn);
   }
+
+  // À chaque ouverture de la caméra : on cherche la cible automatiquement.
+  async function findBoard() {
+    const id = ++run;
+    const kind = cam.source?.kind;
+    if (!kind) return;
+    cal = null;
+    redetectBtn.disabled = true;
+    setNote('🔎 Recherche de la cible…');
+    const res = await detectBoard(cam, () => disposed || id !== run);
+    if (disposed || id !== run) return;
+    redetectBtn.disabled = false;
+    const f = cam.frame();
+    if (res.ok && f) {
+      cal = {
+        version: 1,
+        kind,
+        points: res.points,
+        zoom: cam.zoomValue(),
+        aspect: f.crop.w / f.crop.h,
+        createdAt: new Date().toISOString(),
+        method: 'auto',
+      };
+      saveCalibration(cal);
+      setNote(`✅ Cible détectée automatiquement (précision ≈ ${res.errorMm.toFixed(1).replace('.', ',')} mm, ${Math.round(res.ms)} ms).`);
+      return;
+    }
+    // Échec : la calibration précédente est-elle toujours bonne (trépied pas bougé) ?
+    const saved = loadCalibration(kind);
+    if (saved && f && !calibrationMismatch(saved, { zoom: cam.zoomValue(), aspect: f.crop.w / f.crop.h })) {
+      if (await calibrationStillValid(cam, saved)) {
+        if (disposed || id !== run) return;
+        cal = saved;
+        setNote('✅ Calibration précédente toujours alignée.');
+        return;
+      }
+    }
+    setNote(`⚠️ Cible non trouvée automatiquement : ${res.ok ? "" : res.reason} Vérifie qu’elle est entière et bien éclairée, puis « Redétecter », ou « Ajuster à la main ».`, true);
+  }
+
+  cam.onChange((reason) => {
+    if (reason === 'source') {
+      cal = null;
+      run++;
+      const start = () => (cam.frame() ? void findBoard() : cam.source && setTimeout(start, 100));
+      start();
+    }
+  });
 
   function draw() {
     raf = requestAnimationFrame(draw);
     const ctx = fitCanvas(overlay, cam.el.clientWidth, cam.el.clientHeight);
     const f = cam.frame();
-    const { cal, problem } = calibrationState();
-    note.textContent = problem
-      ? `⚠️ ${problem} Touche « Recalibrer ».`
-      : 'Partie — la détection arrive à l’étape 4. Vérifie que le dessin jaune reste aligné sur la cible.';
-    note.classList.toggle('warn', !!problem);
-    if (!f || !cal || problem) return;
+    if (!f || !cal) return;
     const refW = 1000;
     const refH = refW / (f.crop.w / f.crop.h);
     const B2F = tryBoardToFrame(cal.points, refW, refH);

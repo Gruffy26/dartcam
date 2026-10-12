@@ -1,13 +1,11 @@
 import './style.css';
 import { h, mount } from './dom';
 import { loadOpenCV } from './opencv';
-import { loadCalibration } from './calibration';
 import { calibrateScreen } from './screens/calibrate';
 import { helpScreen } from './screens/help';
 import { homeScreen } from './screens/home';
 import { settingsScreen } from './screens/settings';
 import { viewerScreen } from './screens/viewer';
-import { getSettings } from './settings';
 
 export type ScreenName = 'home' | 'help' | 'settings' | 'calibrate' | 'game';
 export type Nav = (name: ScreenName) => void;
@@ -39,13 +37,9 @@ function build(name: ScreenName): Screen {
     case 'calibrate':
       return calibrateScreen(nav);
     case 'game':
-      // Sans calibration, on commence par là.
-      return hasCalibration() ? viewerScreen(nav) : calibrateScreen(nav);
+      // La cible est détectée automatiquement à l'ouverture de la caméra.
+      return viewerScreen(nav);
   }
-}
-
-export function hasCalibration(): boolean {
-  return loadCalibration(getSettings().source) != null;
 }
 
 // Écran « Chargement… » tant qu'OpenCV n'est pas prêt (long seulement la 1re fois).
@@ -56,7 +50,7 @@ function boot() {
       h('p', { class: 'muted' }, 'La première ouverture télécharge environ 10 Mo.')),
   );
   loadOpenCV().then(
-    () => nav(hasCalibration() ? 'home' : 'calibrate'),
+    () => nav('home'),
     (e: Error) =>
       mount(
         root,
