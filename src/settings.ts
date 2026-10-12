@@ -10,10 +10,12 @@ export interface Settings {
   debug: boolean;
   /** Réglages fins de la détection. */
   detector: DetectorParams;
+  /** Annonce vocale du score de chaque volée. */
+  voice: boolean;
 }
 
 const KEY = 'dartcam.settings';
-const DEFAULTS: Settings = { source: 'camera', zoom: 1, debug: false, detector: DEFAULT_PARAMS };
+const DEFAULTS: Settings = { source: 'camera', zoom: 1, debug: false, detector: DEFAULT_PARAMS, voice: true };
 
 export function getSettings(): Settings {
   const saved = loadJSON<Partial<Settings>>(KEY, {});

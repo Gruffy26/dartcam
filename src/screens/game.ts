@@ -18,7 +18,11 @@ import { showLoupe } from '../loupe';
 import type { Nav, Screen } from '../main';
 import { loadOpenCV, type CV } from '../opencv';
 import { drawBoardOverlay, fitCanvas } from '../overlay-draw';
+import { suggestCheckout } from '../game/checkout';
+import { clearGame, loadGame, saveGame } from '../game/store';
+import { commitTurn, evaluateTurn, newGame, playerStats, remainingScores, undoTurn, type GameState, type TurnEval } from '../game/x01';
 import { getSettings } from '../settings';
+import { speak } from '../speech';
 import { Volley } from '../volley';
 
 /** Largeur des images analysées : assez pour viser, assez léger pour l'iPhone. */
@@ -27,9 +31,16 @@ const ANALYSIS_INTERVAL_MS = 100; // ≈10 analyses par seconde
 const RECT_SIZE = 240; // vue de face (debug)
 
 // Écran de partie : trouve la cible automatiquement, détecte chaque fléchette,
-// gère la volée de 3, le retrait des fléchettes et les corrections au doigt.
-// (Les règles du jeu — 501, double out… — arrivent à l'étape 6.)
+// applique les règles X01 (bust, double out, victoire), gère le retrait des
+// fléchettes, les corrections au doigt, l'annonce vocale et la sauvegarde.
 export function gameScreen(nav: Nav): Screen {
+  const saved = loadGame();
+  if (!saved) {
+    // Pas de partie : on la prépare d'abord.
+    queueMicrotask(() => nav('setup'));
+    return document.createElement('main');
+  }
+  let game: GameState = saved.state;
   const cam = createCameraStage(nav);
   const debugMode = getSettings().debug;
   let disposed = false;
@@ -42,7 +53,9 @@ export function gameScreen(nav: Nav): Screen {
   let detSize = { w: 0, h: 0 };
   let run = 0; // identifiant de la recherche de cible en cours
   let volley = new Volley();
-  let lastVolleys: number[] = [];
+  volley.darts = saved.pending ?? [];
+  /** Dernière annonce faite pour la volée en cours (évite de répéter). */
+  let announced = '';
   /** Fléchette sélectionnée pour une correction (par défaut la dernière). */
   let selected = -1;
   /** Visée au doigt en cours (coordonnées écran). */
@@ -58,8 +71,10 @@ export function gameScreen(nav: Nav): Screen {
   const note = h('div', { class: 'note' });
   const lastScore = h('div', { class: 'last-score' }, '–');
   const chips = h('div', { class: 'volley' });
-  const history = h('div', { class: 'history' });
-  const scorePanel = h('div', { class: 'score-panel' }, lastScore, h('div', { class: 'volley-col' }, chips, history));
+  const scorePanel = h('div', { class: 'score-panel' }, lastScore, h('div', { class: 'volley-col' }, chips));
+  const board = h('div', { class: 'scoreboard' });
+  const checkout = h('div', { class: 'checkout hidden' });
+  const endPanel = h('div', { class: 'end hidden' });
   const stats = h('div', { class: 'stats' });
   const maskCanvas = h('canvas', { class: 'inset' });
   const rectCanvas = h('canvas', { class: 'inset' });
@@ -73,10 +88,11 @@ export function gameScreen(nav: Nav): Screen {
   const missBtn = h('button', { class: 'big', onclick: () => miss() }, 'Raté / 0');
   const undoBtn = h('button', { class: 'big', onclick: () => undo() }, 'Annuler');
   const clearBtn = h('button', { class: 'big primary', onclick: () => cleared(true) }, 'Fléchettes retirées');
-  const boardBtn = h('button', { class: 'pill', onclick: () => boardMenu() }, '🎯 Cible');
+  const boardBtn = h('button', { class: 'pill', onclick: () => gameMenu() }, '☰ Menu');
 
   cam.el.insertBefore(overlay, cam.el.children[1]);
-  cam.el.append(note, loupe, sheet);
+  // Haut de l'écran : scores, finish proposé et message, empilés.
+  cam.el.append(h('div', { class: 'hud' }, board, checkout, note), loupe, sheet, endPanel);
   if (debugMode) cam.el.append(insets);
   cam.el.querySelector('.topbar')!.insertBefore(boardBtn, cam.el.querySelector('.topbar')!.lastChild);
   // Zoom en pinçant à deux doigts : la cible est ensuite redétectée automatiquement.
@@ -163,15 +179,24 @@ export function gameScreen(nav: Nav): Screen {
       cal = null;
       dropDetector();
       run++;
-      volley = new Volley();
-      lastVolleys = [];
       render();
       const start = () => (cam.frame() ? void findBoard() : cam.source && setTimeout(start, 100));
       start();
     }
   });
 
-  // --- Volée ----------------------------------------------------------------
+  // --- Volée et règles du jeu ---------------------------------------------
+  const persist = () => saveGame({ state: game, pending: volley.darts });
+  const remaining = () => remainingScores(game);
+  const playerName = (i: number) => game.config.players[i];
+
+  /** Évaluation de la volée en cours selon les règles (bust, victoire…). */
+  function turnEval(): TurnEval {
+    return evaluateTurn(remaining()[game.current], volley.darts.map((d) => d.score), game.config.doubleOut);
+  }
+  /** La volée est terminée : 3 fléchettes, bust ou victoire. */
+  const turnOver = () => volley.full || turnEval().over;
+
   function afterChange(announce?: Score) {
     selected = volley.darts.length - 1;
     if (announce) {
@@ -180,25 +205,40 @@ export function gameScreen(nav: Nav): Screen {
       void lastScore.offsetWidth; // relance l'animation
       lastScore.classList.add('pop');
     }
-    if (volley.full) {
+    const ev = turnEval();
+    if (turnOver()) {
       detector?.setMode('removal');
-      setNote(`Volée terminée : ${volley.total} points. Va retirer tes fléchettes.`);
+      const name = playerName(game.current);
+      const msg = ev.finished
+        ? `🏆 ${name} finit ! Retire tes fléchettes pour valider la victoire.`
+        : ev.bust
+          ? `💥 Bust ! ${name} reste à ${ev.remaining}. Va retirer tes fléchettes.`
+          : `Volée : ${ev.scored} points. Va retirer tes fléchettes.`;
+      setNote(msg);
+      // Annonce vocale (une seule fois, sauf si une correction change le résultat).
+      const key = `${ev.bust}:${ev.finished}:${ev.scored}`;
+      if (key !== announced) {
+        announced = key;
+        speak(ev.finished ? `Partie gagnée par ${name} !` : ev.bust ? 'Bust !' : String(ev.scored));
+      }
     } else {
       detector?.setMode('throwing');
+      announced = '';
     }
+    persist();
     render();
   }
 
   function onDart(ev: DartEvent, img: ImageData) {
-    if (!volley.addDetected(ev.score, ev.tip, ev.board)) return;
-    if (!volley.full) setNote(`🎯 ${ev.score.libelle} (${ev.score.points} pts) — touche l’image pour corriger.`);
+    if (turnOver() || !volley.addDetected(ev.score, ev.tip, ev.board)) return;
+    if (!turnOver()) setNote(`🎯 ${ev.score.libelle} (${ev.score.points} pts) — touche l’image pour corriger.`);
     afterChange(ev.score);
     if (debugMode) drawRectified(img);
   }
 
   function miss() {
-    if (volley.full) {
-      // Volée complète : « Raté » remplace la fléchette sélectionnée.
+    if (turnOver()) {
+      // Volée terminée : « Raté » remplace la fléchette sélectionnée.
       volley.correct(selected, MISS, null, null);
       setNote('Fléchette corrigée : 0.');
       afterChange(MISS);
@@ -218,13 +258,28 @@ export function gameScreen(nav: Nav): Screen {
     lastScore.textContent = volley.last?.score.libelle ?? '–';
   }
 
-  /** Volée enregistrée, nouvelle volée (fléchettes retirées, automatiquement ou au bouton). */
+  /** Fléchettes retirées (automatiquement ou au bouton) : la volée est enregistrée. */
   function cleared(manual: boolean) {
-    if (volley.darts.length) {
-      lastVolleys = [volley.total, ...lastVolleys].slice(0, 3);
-      setNote(`✅ Volée enregistrée : ${volley.total} points.${manual ? ' Attends « Prêt »…' : ' À toi !'}`);
+    if (volley.darts.length && game.winner == null) {
+      const before = game;
+      game = commitTurn(game, volley.darts.map((d) => d.score));
+      const last = game.turns[game.turns.length - 1];
+      if (game.winner != null) {
+        volley = new Volley();
+        persist();
+        showEnd();
+        return;
+      }
+      const next = game.current;
+      const rem = remaining()[next];
+      setNote(
+        `${last.bust ? '💥 Bust enregistré.' : `✅ ${playerName(before.current)} : ${last.before - last.after} points.`} ` +
+          `À ${playerName(next)} (${rem})${manual ? ', attends « Prêt »…' : ' !'}`,
+      );
+      speak(game.config.players.length > 1 ? `À ${playerName(next)}, il reste ${rem}.` : `Il reste ${rem}.`);
     } else if (manual) setNote('Nouvelle image de référence… attends « Prêt ».');
     volley = new Volley();
+    announced = '';
     if (manual) detector?.resetReference();
     else detector?.setMode('throwing');
     lastScore.textContent = '–';
@@ -232,15 +287,47 @@ export function gameScreen(nav: Nav): Screen {
   }
 
   function render() {
+    const ev = turnEval();
+    // Tableau des scores : restant de chaque joueur, joueur actif en évidence.
+    const rem = remaining();
+    const stats = playerStats(game);
+    board.className = `scoreboard n${game.config.players.length}`;
+    board.replaceChildren(
+      ...game.config.players.map((name, i) => {
+        const active = i === game.current && game.winner == null;
+        const shown = active && !ev.bust ? ev.remaining : rem[i];
+        return h(
+          'div',
+          { class: 'player' + (active ? ' active' : '') },
+          h('div', { class: 'pname' }, name),
+          h('div', { class: 'premain' }, String(shown)),
+          h('div', { class: 'pavg' }, stats[i].darts ? `moy. ${stats[i].average.toFixed(1).replace('.', ',')}` : ''),
+        );
+      }),
+    );
+    // Finish proposé (score restant ≤ 170, fléchettes restantes de la volée).
+    const left = 3 - volley.darts.length;
+    const r = ev.remaining;
+    if (game.winner == null && !ev.over && r <= 170) {
+      const route = suggestCheckout(r, left, game.config.doubleOut);
+      checkout.textContent = route ? `Finish : ${route.map((d) => d.libelle).join('  ')}` : `Pas de finish en ${left} fléchette${left > 1 ? 's' : ''}`;
+      checkout.classList.remove('hidden');
+    } else checkout.classList.add('hidden');
+
     chips.replaceChildren(
       ...[0, 1, 2].map((i) => {
         const d = volley.darts[i];
-        const cls = 'chip' + (d ? '' : ' empty') + (d && i === selected ? ' selected' : '') + (d?.corrected || d?.origin === 'manual' ? ' fixed' : '');
+        const counted = i < ev.used || !ev.over;
+        const cls =
+          'chip' +
+          (d ? '' : ' empty') +
+          (d && i === selected ? ' selected' : '') +
+          (d?.corrected || d?.origin === 'manual' ? ' fixed' : '') +
+          (d && !counted ? ' void' : '');
         return h('button', { class: cls, onclick: () => select(i) }, d?.score.libelle ?? '·');
       }),
-      h('span', { class: 'total' }, `= ${volley.total}`),
+      h('span', { class: 'total' + (ev.bust ? ' bust' : '') }, ev.bust ? 'BUST' : `= ${ev.scored}`),
     );
-    history.textContent = lastVolleys.length ? `Volées précédentes : ${lastVolleys.join(' · ')}` : '';
     undoBtn.disabled = volley.darts.length === 0;
   }
 
@@ -249,6 +336,54 @@ export function gameScreen(nav: Nav): Screen {
     selected = i;
     render();
     setNote(`Fléchette ${i + 1} sélectionnée (${volley.darts[i].score.libelle}) : touche l’image à l’endroit de sa pointe.`);
+  }
+
+  // --- Fin de partie --------------------------------------------------------
+  function showEnd() {
+    const w = game.winner!;
+    const stats = playerStats(game);
+    speak(`Victoire de ${playerName(w)} ! Moyenne ${stats[w].average.toFixed(0)}.`);
+    detector?.setMode('removal');
+    endPanel.replaceChildren(
+      h('h2', {}, `🏆 ${playerName(w)} gagne !`),
+      h(
+        'table',
+        {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Joueur'), h('th', {}, 'Moy. / volée'), h('th', {}, 'Fléchettes'), h('th', {}, 'Meilleure'))),
+        h(
+          'tbody',
+          {},
+          ...stats.map((p, i) =>
+            h(
+              'tr',
+              { class: i === w ? 'winner' : '' },
+              h('td', {}, p.name),
+              h('td', {}, p.average.toFixed(1).replace('.', ',')),
+              h('td', {}, String(p.darts)),
+              h('td', {}, String(p.best)),
+            ),
+          ),
+        ),
+      ),
+      h('button', { class: 'big primary', onclick: () => rematch() }, 'Revanche'),
+      h('button', { class: 'big', onclick: () => (clearGame(), nav('setup')) }, 'Nouvelle partie'),
+      h('button', { class: 'big', onclick: () => (clearGame(), nav('home')) }, 'Accueil'),
+    );
+    endPanel.classList.remove('hidden');
+    render();
+  }
+
+  function rematch() {
+    game = newGame(game.config);
+    volley = new Volley();
+    announced = '';
+    lastScore.textContent = '–';
+    persist();
+    endPanel.classList.add('hidden');
+    speak(`Revanche ! À ${playerName(0)}.`);
+    setNote(`Revanche ! À ${playerName(0)}.`);
+    detector?.resetReference();
+    afterChange();
   }
 
   // --- Corrections au doigt : viser avec la loupe, puis choisir --------------
@@ -310,13 +445,11 @@ export function gameScreen(nav: Nav): Screen {
             hideSheet();
             setNote(`Fléchette ${selected + 1} corrigée : ${r.score.libelle}.`);
             afterChange(r.score);
-            selected = volley.darts.length - 1;
-            render();
           },
         }, `Corriger « ${sel.score.libelle} » → ${r.score.libelle}`),
       );
     }
-    if (!volley.full) {
+    if (!turnOver()) {
       buttons.push(
         h('button', {
           class: sel ? 'big' : 'big primary',
@@ -342,10 +475,26 @@ export function gameScreen(nav: Nav): Screen {
     sheet.classList.add('hidden');
   }
 
-  function boardMenu() {
-    showSheet('Cible', [
+  function gameMenu() {
+    showSheet('Menu', [
       h('button', { class: 'big', onclick: () => (hideSheet(), void findBoard()) }, 'Redétecter la cible'),
-      h('button', { class: 'big', onclick: () => nav('calibrate') }, 'Ajuster à la main'),
+      h('button', { class: 'big', onclick: () => nav('calibrate') }, 'Ajuster la cible à la main'),
+      h(
+        'button',
+        {
+          class: 'big',
+          onclick: () => {
+            hideSheet();
+            if (!game.turns.length) return;
+            game = undoTurn(game);
+            volley = new Volley();
+            setNote(`Volée précédente annulée. À ${playerName(game.current)} de rejouer sa volée.`);
+            afterChange();
+          },
+        },
+        'Annuler la volée précédente',
+      ),
+      h('button', { class: 'big', onclick: () => (clearGame(), nav('home')) }, 'Abandonner la partie'),
       h('button', { class: 'big', onclick: () => hideSheet() }, 'Fermer'),
     ]);
   }
@@ -380,20 +529,20 @@ export function gameScreen(nav: Nav): Screen {
         getSettings().detector,
       );
       detSize = { w: img.width, h: img.height };
-      if (volley.full) detector.setMode('removal');
+      if (turnOver() || game.winner != null) detector.setMode('removal');
     }
     const events = detector.process(img, performance.now());
     for (const ev of events) {
       if (ev.kind === 'dart') onDart(ev, img);
-      else if (ev.kind === 'cleared') cleared(false);
+      else if (ev.kind === 'cleared' && game.winner == null) cleared(false);
       else if (ev.kind === 'moved') {
         setNote('Le trépied a bougé : nouvelle détection de la cible…', true);
         void findBoard();
         return;
-      } else if (ev.kind === 'ignored' && ev.reason === 'big' && !volley.full) {
+      } else if (ev.kind === 'ignored' && ev.reason === 'big' && !turnOver()) {
         setNote('Quelque chose est devant la cible… J’attends que la vue se libère.');
-      } else if (ev.kind === 'reference') {
-        setNote('🟢 Prêt ! Lance tes fléchettes.');
+      } else if (ev.kind === 'reference' && game.winner == null) {
+        setNote(`🟢 Prêt ! À ${playerName(game.current)} de lancer.`);
       }
     }
     if (debugMode) updateDebug();
@@ -585,6 +734,14 @@ export function gameScreen(nav: Nav): Screen {
   });
 
   render();
+  if (game.winner != null) showEnd();
+  else if (volley.darts.length) {
+    // Reprise avec une volée en cours : message et mode de détection à jour, sans
+    // répéter l'annonce vocale déjà faite.
+    const ev = turnEval();
+    announced = `${ev.bust}:${ev.finished}:${ev.scored}`;
+    afterChange();
+  }
   draw();
 
   return {
