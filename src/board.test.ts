@@ -138,3 +138,18 @@ describe('makeScore', () => {
     expect(makeScore(20, 0).libelle).toBe('0');
   });
 });
+
+describe('distance au fil le plus proche', async () => {
+  const { distanceToWire } = await import('./board');
+  it('centre du T20 : loin des fils radiaux, à 4 mm des bords du triple', () => {
+    const p = boardPoint(103, 0);
+    expect(distanceToWire(p.x, p.y)).toBeCloseTo(4, 5);
+  });
+  it('près d’un fil de secteur', () => {
+    const p = boardPoint(130, 8.5); // fil 20/1 à 9°
+    expect(distanceToWire(p.x, p.y)).toBeCloseTo(130 * Math.sin((0.5 * Math.PI) / 180), 3);
+  });
+  it('près du bord du double', () => {
+    expect(distanceToWire(0, 169)).toBeCloseTo(1, 5);
+  });
+});

@@ -90,3 +90,24 @@ export function scoreFromBoardCoords(x_mm: number, y_mm: number): Score {
   if (r >= RADII.doubleInner) return makeScore(secteur, 2);
   return makeScore(secteur, 1);
 }
+
+/** Rayons des fils circulaires (mm). */
+const RING_WIRES = [RADII.bull, RADII.outerBull, RADII.tripleInner, RADII.tripleOuter, RADII.doubleInner, RADII.doubleOuter];
+
+/**
+ * Distance (mm) entre un impact et le fil le plus proche (fil circulaire ou fil de
+ * secteur). Sous ~2 mm, le score dépend d'une précision que la caméra n'a pas toujours :
+ * la fléchette est signalée « à vérifier ».
+ */
+export function distanceToWire(x_mm: number, y_mm: number): number {
+  const r = Math.hypot(x_mm, y_mm);
+  let d = Math.min(...RING_WIRES.map((w) => Math.abs(r - w)));
+  if (r > RADII.outerBull && r <= RADII.doubleOuter + 2) {
+    // Fils de secteur : à ±9° du milieu de chaque secteur.
+    const a = angleFromTop(x_mm, y_mm);
+    const off = Math.abs((((a + SECTOR_ANGLE / 2) % SECTOR_ANGLE) + SECTOR_ANGLE) % SECTOR_ANGLE);
+    const toWireDeg = Math.min(off, SECTOR_ANGLE - off);
+    d = Math.min(d, r * Math.sin((toWireDeg * Math.PI) / 180));
+  }
+  return d;
+}

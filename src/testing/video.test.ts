@@ -189,7 +189,7 @@ run('vidéo réelle — détection des fléchettes', () => {
             }
             writePng(join(process.env.OUT_DIR, `dart-${i}.png`), crop, cw * 2, ch);
           }
-          console.log(i, 'FLÉCHETTE', ev.score.libelle, `pointe=(${ev.tip.x.toFixed(0)},${ev.tip.y.toFixed(0)})`, `empennage=(${ev.tail.x.toFixed(0)},${ev.tail.y.toFixed(0)})`, `r=${Math.hypot(ev.board.x, ev.board.y).toFixed(0)}mm`, `aire=${ev.area.toFixed(0)}`, `conf=${ev.confidence.toFixed(2)}`, JSON.stringify(det.debug.tip?.votes));
+          console.log(i, 'FLÉCHETTE', ev.score.libelle, `pointe=(${ev.tip.x.toFixed(0)},${ev.tip.y.toFixed(0)})`, `empennage=(${ev.tail.x.toFixed(0)},${ev.tail.y.toFixed(0)})`, `r=${Math.hypot(ev.board.x, ev.board.y).toFixed(0)}mm`, `aire=${ev.area.toFixed(0)}`, ev.uncertain ? 'À VÉRIFIER' : '', JSON.stringify(det.debug.shape));
         } else if (ev.kind === 'moved') {
           // Comme l'app : nouvelle détection de la cible et nouveau détecteur.
           const again = autoCalibrate(cv, frame);
@@ -198,7 +198,7 @@ run('vidéo réelle — détection des fléchettes', () => {
             det.dispose();
             det = new DartDetector(cv, { frameToBoard: again.H, width: meta.width, height: meta.height });
           }
-        } else if (ev.kind === 'ignored' && ev.reason !== 'small') console.log(i, 'ignoré', ev.reason, ev.area.toFixed(0));
+        } else if (ev.kind === 'ignored' && (ev.reason !== 'small' || process.env.ALL)) console.log(i, 'ignoré', ev.reason, ev.area.toFixed(0), JSON.stringify(det.debug.shape));
         else if (ev.kind === 'reference') console.log(i, 'référence');
       }
     }

@@ -13,7 +13,7 @@
 // Chaque Mat OpenCV est libérée (`delete`) : les fuites font planter Safari sur iPhone.
 
 import type { RgbaImage } from '../autocalib';
-import { boardPoint, RADII, scoreFromBoardCoords, type Score } from '../board';
+import { boardPoint, distanceToWire, RADII, scoreFromBoardCoords, type Score } from '../board';
 import { applyH, invertH, type Mat3, type Pt } from '../homography';
 import type { CV } from '../opencv';
 import { estimateShift, makeAnchor, type Anchor } from './align';
@@ -34,6 +34,8 @@ export interface DartEvent {
   score: Score;
   area: number;
   confidence: number;
+  /** Pointe à moins de 2 mm d'un fil : score à vérifier. */
+  uncertain: boolean;
 }
 
 export type DetectorEvent =
@@ -68,6 +70,8 @@ export interface DetectorDebug {
   analyseMs?: number;
   /** Pixels encore différents de l'image de début de volée (retrait des fléchettes). */
   cleanDiff?: number;
+  /** Forme de la dernière silhouette examinée (contrôle « est-ce une fléchette ? »). */
+  shape?: { straight: number; width: number; lengthRatio: number };
 }
 
 export interface Calib {
@@ -104,7 +108,7 @@ function expectedDartLength(cam: CameraModel, b: Pt): number {
 }
 
 /** Pixels de la tache principale + ceux des taches dont un pixel est à moins de `dist` px d'elle. */
-function gatherNear(main: number[], others: { xy: number[] }[], dist: number): number[] {
+function gatherNear(main: number[], others: [number, number[]][], dist: number): { xy: number[]; labels: number[] } {
   let x0 = Infinity;
   let y0 = Infinity;
   let x1 = -Infinity;
@@ -115,17 +119,42 @@ function gatherNear(main: number[], others: { xy: number[] }[], dist: number): n
     y0 = Math.min(y0, main[i + 1]);
     y1 = Math.max(y1, main[i + 1]);
   }
-  const out = [...main];
-  for (const o of others) {
+  const xy = [...main];
+  const labels: number[] = [];
+  for (const [l, o] of others) {
     let near = false;
-    for (let i = 0; i < o.xy.length && !near; i += 2) {
-      const dx = Math.max(x0 - o.xy[i], 0, o.xy[i] - x1);
-      const dy = Math.max(y0 - o.xy[i + 1], 0, o.xy[i + 1] - y1);
+    for (let i = 0; i < o.length && !near; i += 2) {
+      const dx = Math.max(x0 - o[i], 0, o[i] - x1);
+      const dy = Math.max(y0 - o[i + 1], 0, o[i + 1] - y1);
       if (dx * dx + dy * dy < dist * dist) near = true;
     }
-    if (near) out.push(...o.xy);
+    if (near) {
+      for (let i = 0; i < o.length; i++) xy.push(o[i]);
+      labels.push(l);
+    }
   }
-  return out;
+  return { xy, labels };
+}
+
+/**
+ * Forme de la silhouette par rapport à l'axe trouvé :
+ * - `straight` : part des pixels à moins de 4 px de l'axe (fût bien droit) ;
+ * - `width` : largeur typique (px) mesurée perpendiculairement à l'axe.
+ */
+function dartShape(xy: number[], tip: TipResult): { straight: number; width: number } {
+  const n = xy.length / 2;
+  const v = tip.axis;
+  let near = 0;
+  const qs: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const dx = xy[2 * i] - tip.tip.x;
+    const dy = xy[2 * i + 1] - tip.tip.y;
+    const q = Math.abs(dx * -v.y + dy * v.x);
+    if (q < 4) near++;
+    qs.push(q);
+  }
+  qs.sort((a, b) => a - b);
+  return { straight: near / n, width: 2 * (qs[Math.floor(n * 0.8)] ?? 0) };
 }
 
 function convexHull(points: Pt[]): Pt[] {
@@ -443,8 +472,7 @@ export class DartDetector {
             this.startVolley(cur, curC);
             events.push({ kind: 'cleared' });
           } else if (this.mode === 'throwing') {
-            const ev = this.analyse(cur, curC);
-            if (ev) {
+            for (const ev of this.analyse(cur, curC, settled ? 'settled' : 'periodic')) {
               if (ev.kind === 'dart') this.dartsSinceStart++;
               events.push(ev);
             }
@@ -478,14 +506,21 @@ export class DartDetector {
     }
   }
 
-  private analyse(cur: any, curC: any): DetectorEvent | null {
+  /**
+   * Analyse d'une image stable.
+   * - après un mouvement (`settled`) : cherche les nouvelles fléchettes (jusqu'à 3 si
+   *   plusieurs sont arrivées ensemble) ;
+   * - sans mouvement (`periodic`) : ne fait que remettre la référence à jour (lents
+   *   changements de lumière ou d'ombre) — une fléchette qui se plante crée toujours un
+   *   mouvement, donc on ne cherche jamais de fléchette ici (évite les « 0 » fantômes).
+   */
+  private analyse(cur: any, curC: any, mode: 'settled' | 'periodic'): DetectorEvent[] {
     const cv = this.cv;
     const t0 = performance.now();
     const dd = this.diffTo(this.ref, this.refC, cur, curC);
     const absd = dd.g;
     const absdM = dd.m;
     const diff = new cv.Mat();
-
     const labels = new cv.Mat();
     const stats = new cv.Mat();
     const centroids = new cv.Mat();
@@ -500,81 +535,128 @@ export class DartDetector {
       // Taches de changement (composantes connexes).
       const n = cv.connectedComponentsWithStats(diff, labels, stats, centroids, 8, cv.CV_32S);
       const areas: number[] = [0];
-      let main = 0;
+      let largest = 0;
       for (let l = 1; l < n; l++) {
-        const a = stats.intAt(l, cv.CC_STAT_AREA);
-        areas.push(a);
-        if (a > areas[main]) main = l;
+        areas.push(stats.intAt(l, cv.CC_STAT_AREA));
+        if (areas[l] > areas[largest]) largest = l;
       }
-      const mainArea = main ? areas[main] : 0;
-      this.debug.area = mainArea;
+      const largestArea = largest ? areas[largest] : 0;
+      this.debug.area = largestArea;
 
-      if (mainArea > this.maxArea) {
-        // Main, bras, personne devant : on garde la référence et on attend.
-        return { kind: 'ignored', reason: 'big', area: mainArea };
+      if (mode === 'periodic') {
+        // Pas de mouvement : ce n'est pas une fléchette. On absorbe le changement, sauf
+        // une personne immobile devant la cible (on attendra qu'elle parte).
+        if (largestArea <= this.maxArea) this.replaceRef(cur, curC);
+        return [];
       }
-      if (!main || mainArea < this.minArea / 3) {
+      if (largestArea > this.maxArea) {
+        // Main, bras, personne devant : on garde la référence et on attend.
+        return [{ kind: 'ignored', reason: 'big', area: largestArea }];
+      }
+      if (!largest || largestArea < this.minArea / 3) {
         // Rien (ou du bruit) : la référence suit les petits changements de lumière.
         this.replaceRef(cur, curC);
-        return { kind: 'ignored', reason: 'small', area: mainArea };
+        return [{ kind: 'ignored', reason: 'small', area: largestArea }];
       }
 
       // Pixels de chaque tache assez grande.
-      const keep = new Map<number, number[]>();
-      for (let l = 1; l < n; l++) if (areas[l] >= 12) keep.set(l, []);
+      const comps = new Map<number, number[]>();
+      for (let l = 1; l < n; l++) if (areas[l] >= 12) comps.set(l, []);
       const lab = labels.data32S as Int32Array;
       const W = diff.cols;
       for (let i = 0; i < lab.length; i++) {
         const l = lab[i];
-        if (l) keep.get(l)?.push(i % W, (i / W) | 0);
+        if (l) comps.get(l)?.push(i % W, (i / W) | 0);
       }
-      const mainXy = keep.get(main)!;
-      const others = [...keep.entries()].filter(([l]) => l !== main).map(([, xy]) => ({ xy }));
-      // Direction attendue de la fléchette à l'image, au niveau de la tache principale.
-      const F2B = this.calib.frameToBoard;
-      let mx = 0;
-      let my = 0;
-      for (let i = 0; i < mainXy.length; i += 2) {
-        mx += mainXy[i];
-        my += mainXy[i + 1];
-      }
-      const mainCenter = { x: mx / (mainXy.length / 2), y: my / (mainXy.length / 2) };
-      const outDir = this.cam ? outDirection(this.cam, applyH(F2B, mainCenter)) : null;
-      // Morceaux voisins : alignés avec la tache principale, ou (si la direction est
-      // connue) simplement proches — la recherche de droite fera le tri.
-      const xy = outDir ? gatherNear(mainXy, others, 90) : mergeAlongAxis({ xy: mainXy }, others).xy;
-      const area = xy.length / 2;
-      this.debug.area = area;
-      if (area < this.minArea) {
-        this.replaceRef(cur, curC);
-        return { kind: 'ignored', reason: 'small', area };
-      }
-      this.debug.contour = xy;
 
-      const radius = (p: Pt) => {
-        const b = applyH(F2B, p);
-        return Math.hypot(b.x, b.y);
-      };
-      const tip = (outDir && locateDart(xy, outDir)) || findTip({ xy, outDir, boardRadius: radius });
+      const events: DetectorEvent[] = [];
+      // Plusieurs fléchettes peuvent être arrivées pendant le même mouvement.
+      for (let k = 0; k < 3 && comps.size; k++) {
+        let main = -1;
+        for (const [l] of comps) if (main < 0 || areas[l] > areas[main]) main = l;
+        if (areas[main] < this.minArea / 3) break;
+        const res = this.findDart(main, comps, absdM);
+        if (k === 0) this.debug.area = res.area;
+        for (const l of res.used) comps.delete(l);
+        comps.delete(main);
+        if (res.event) events.push(res.event);
+        else if (k === 0) events.push({ kind: 'ignored', reason: res.reason ?? 'no-tip', area: res.area });
+      }
       this.replaceRef(cur, curC);
-      if (!tip) return { kind: 'ignored', reason: 'no-tip', area };
-      // Trop court pour une fléchette (reflet, poussière, petit déplacement d'ombre).
-      const expected = this.cam ? expectedDartLength(this.cam, applyH(F2B, mainCenter)) : 0;
-      if (expected > 0 && tip.length < expected * 0.3) {
-        this.debug.tip = tip;
-        return { kind: 'ignored', reason: 'no-tip', area };
-      }
+      return events;
+    } finally {
+      absd.delete();
+      absdM.delete();
+      diff.delete();
+      labels.delete();
+      stats.delete();
+      centroids.delete();
+      this.debug.analyseMs = performance.now() - t0;
+    }
+  }
 
-      // Le bout du fût est souvent peu contrasté : on prolonge avec un seuil plus bas.
-      // Couleur incluse : un fût gris reste visible quand il traverse un anneau rouge ou vert.
-      const ext = extendTip(tip.tip, tip.axis, absdM.data, absdM.cols, absdM.rows, Math.max(6, this.params.diffThreshold * 0.45), 60, 8);
-      if (radius(ext.tip) <= RADII.doubleOuter + 40) tip.tip = ext.tip;
-      // Le flou (5×5) étale le changement ≈ 1,5 px au-delà du vrai bout : on le retire.
-      tip.tip = { x: tip.tip.x + tip.axis.x * TIP_BLUR_PX, y: tip.tip.y + tip.axis.y * TIP_BLUR_PX };
-      this.debug.tip = tip;
+  /** Cherche une fléchette à partir de la tache `main` (et des morceaux voisins). */
+  private findDart(
+    main: number,
+    comps: Map<number, number[]>,
+    absdM: any,
+  ): { event?: DartEvent; used: number[]; area: number; reason?: 'small' | 'no-tip' } {
+    const mainXy = comps.get(main)!;
+    const F2B = this.calib.frameToBoard;
+    let mx = 0;
+    let my = 0;
+    for (let i = 0; i < mainXy.length; i += 2) {
+      mx += mainXy[i];
+      my += mainXy[i + 1];
+    }
+    const mainCenter = { x: mx / (mainXy.length / 2), y: my / (mainXy.length / 2) };
+    const outDir = this.cam ? outDirection(this.cam, applyH(F2B, mainCenter)) : null;
+    const others = [...comps.entries()].filter(([l]) => l !== main);
+    // Morceaux voisins : alignés avec la tache principale, ou (si la direction est
+    // connue) simplement proches — la recherche de droite fera le tri.
+    let xy: number[];
+    let used: number[];
+    if (outDir) {
+      const g = gatherNear(mainXy, others, 90);
+      xy = g.xy;
+      used = g.labels;
+    } else {
+      xy = mergeAlongAxis({ xy: mainXy }, others.map(([, p]) => ({ xy: p }))).xy;
+      used = [];
+    }
+    const area = xy.length / 2;
+    if (area < this.minArea) return { used: [], area, reason: 'small' };
 
-      const board = applyH(F2B, tip.tip);
-      return {
+    const radius = (p: Pt) => {
+      const b = applyH(F2B, p);
+      return Math.hypot(b.x, b.y);
+    };
+    const tip = (outDir && locateDart(xy, outDir)) || findTip({ xy, outDir, boardRadius: radius });
+    if (!tip) return { used, area, reason: 'no-tip' };
+
+    // Contrôle de forme : une fléchette est longue, droite et fine.
+    const expected = this.cam ? expectedDartLength(this.cam, applyH(F2B, mainCenter)) : 0;
+    const shape = dartShape(xy, tip);
+    this.debug.shape = { ...shape, lengthRatio: expected ? tip.length / expected : 0 };
+    if (expected > 0 && (tip.length < expected * 0.3 || tip.length > expected * 2.2)) return { used, area, reason: 'no-tip' };
+    if (shape.straight < 0.15 || shape.width > Math.max(14, tip.length * 0.6)) return { used, area, reason: "no-tip" };
+
+    // Le bout du fût est souvent peu contrasté : on prolonge avec un seuil plus bas.
+    // Couleur incluse : un fût gris reste visible quand il traverse un anneau rouge ou vert.
+    const ext = extendTip(tip.tip, tip.axis, absdM.data, absdM.cols, absdM.rows, Math.max(6, this.params.diffThreshold * 0.45), 60, 8);
+    if (radius(ext.tip) <= RADII.doubleOuter + 40) tip.tip = ext.tip;
+    // Le flou (5×5) étale le changement ≈ 1,5 px au-delà du vrai bout : on le retire.
+    tip.tip = { x: tip.tip.x + tip.axis.x * TIP_BLUR_PX, y: tip.tip.y + tip.axis.y * TIP_BLUR_PX };
+    this.debug.contour = xy;
+    this.debug.tip = tip;
+
+    const board = applyH(F2B, tip.tip);
+    // Pointe hors de la cible (au-delà du tour de chiffres) : pas une fléchette plantée.
+    if (Math.hypot(board.x, board.y) > 228) return { used, area, reason: 'no-tip' };
+    return {
+      used,
+      area,
+      event: {
         kind: 'dart',
         tip: tip.tip,
         tail: tip.tail,
@@ -582,17 +664,9 @@ export class DartDetector {
         score: scoreFromBoardCoords(board.x, board.y),
         area,
         confidence: tip.confidence,
-      };
-    } finally {
-      absd.delete();
-      absdM.delete();
-      diff.delete();
-
-      labels.delete();
-      stats.delete();
-      centroids.delete();
-      this.debug.analyseMs = performance.now() - t0;
-    }
+        uncertain: distanceToWire(board.x, board.y) < 2,
+      },
+    };
   }
 
   private replaceRef(cur: any, curC: any) {
