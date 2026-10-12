@@ -4,6 +4,7 @@ import { loadOpenCV, type CV } from '../opencv';
 import { getSettings, updateSettings } from '../settings';
 import { openCamera, openVideoFile, SourceError, type FrameSource } from '../source';
 import { isScreenKeptOn, keepScreenOn } from '../wakelock';
+import { cropRect, formatZoom } from '../zoom';
 
 /** Largeur des images analysées : assez pour viser, assez léger pour l'iPhone. */
 export const ANALYSIS_WIDTH = 640;
@@ -24,6 +25,17 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
   const message = h('div', { class: 'message hidden' });
   const fileInput = h('input', { type: 'file', accept: 'video/*,.mov,.mp4', class: 'hidden' });
   const sourceBtn = h('button', { class: 'pill' });
+  const zoomSlider = h('input', { type: 'range', class: 'zoom-slider', 'aria-label': 'Zoom' });
+  const zoomLabel = h('span', { class: 'zoom-value' });
+  const zoomMode = h('small', { class: 'zoom-mode' });
+  const zoomBar = h(
+    'div',
+    { class: 'zoombar hidden' },
+    h('button', { class: 'zoom-btn', 'aria-label': 'Dézoomer', onclick: () => void stepZoom(-1) }, '−'),
+    zoomSlider,
+    h('button', { class: 'zoom-btn', 'aria-label': 'Zoomer', onclick: () => void stepZoom(1) }, '+'),
+    h('div', { class: 'zoom-info' }, zoomLabel, zoomMode),
+  );
 
   const el = h(
     'main',
@@ -36,6 +48,7 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
       sourceBtn,
     ),
     h('div', { class: 'note' }, PURPOSE_TEXT[purpose]),
+    zoomBar,
     stats,
     message,
     fileInput,
@@ -60,7 +73,39 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
     source = s;
     stage.replaceChildren(s.video);
     hideMessage();
+    refreshZoom();
   }
+
+  // --- Zoom ---------------------------------------------------------------
+  function refreshZoom() {
+    const z = source?.zoom;
+    zoomBar.classList.toggle('hidden', !z);
+    if (!z || !source) return;
+    zoomSlider.min = String(z.min);
+    zoomSlider.max = String(z.max);
+    zoomSlider.step = String(z.step);
+    zoomSlider.value = String(z.value);
+    zoomLabel.textContent = formatZoom(z.value);
+    zoomMode.textContent = z.mode === 'capteur' ? 'zoom caméra' : 'zoom numérique';
+    // Zoom numérique : on agrandit l'affichage autour du centre, exactement comme
+    // le recadrage appliqué à l'analyse (cropRect).
+    source.video.style.transform = z.digital > 1 ? `scale(${z.digital})` : '';
+  }
+
+  async function setZoom(value: number) {
+    const z = source?.zoom;
+    if (!z) return;
+    await z.set(value);
+    updateSettings({ zoom: z.value });
+    refreshZoom();
+  }
+
+  function stepZoom(dir: 1 | -1) {
+    const z = source?.zoom;
+    if (z) return setZoom(Math.round((z.value + dir * 0.5) * 10) / 10);
+  }
+
+  zoomSlider.addEventListener('input', () => void setZoom(Number(zoomSlider.value)));
 
   async function start() {
     stopSource();
@@ -69,7 +114,7 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
     if (mode === 'camera') {
       showMessage('Ouverture de la caméra…');
       try {
-        attach(await openCamera());
+        attach(await openCamera(getSettings().zoom));
       } catch (e) {
         const text = e instanceof SourceError ? e.message : String(e);
         showMessage(text, [
@@ -132,14 +177,15 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
       stats.textContent = 'En attente d’images…';
       return;
     }
+    const crop = cropRect(v.videoWidth, v.videoHeight, source?.zoom?.digital ?? 1);
     const w = ANALYSIS_WIDTH;
-    const hgt = Math.round((v.videoHeight * w) / v.videoWidth);
+    const hgt = Math.round((crop.h * w) / crop.w);
     if (canvas.width !== w || canvas.height !== hgt) {
       canvas.width = w;
       canvas.height = hgt;
     }
     const t0 = performance.now();
-    ctx.drawImage(v, 0, 0, w, hgt);
+    ctx.drawImage(v, crop.x, crop.y, crop.w, crop.h, 0, 0, w, hgt);
     const img = ctx.getImageData(0, 0, w, hgt);
     const t1 = performance.now();
     const rgba = cv.matFromImageData(img);
@@ -162,7 +208,7 @@ export function viewerScreen(nav: Nav, purpose: 'calibrate' | 'game'): Screen {
       lastFpsT = now;
     }
     stats.textContent =
-      `Source ${v.videoWidth}×${v.videoHeight} · analyse ${w}×${hgt} · ` +
+      `Source ${v.videoWidth}×${v.videoHeight} · zoom ${formatZoom(source?.zoom?.value ?? 1)} · analyse ${w}×${hgt} · ` +
       `${fps.toFixed(1)} img/s · capture ${(t1 - t0).toFixed(1)} ms + OpenCV ${(t2 - t1).toFixed(1)} ms · luminosité ${brightness.toFixed(0)} · ` +
       `écran maintenu allumé : ${isScreenKeptOn() ? 'oui' : 'non'}`;
   }

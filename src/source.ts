@@ -1,9 +1,13 @@
 // Source d'images : caméra arrière de l'iPhone ou vidéo de test. Le reste de l'app
 // ne voit qu'un <video> qui produit des images, quelle que soit la source.
 
+import { createZoomControl, type ZoomControl } from './zoom';
+
 export interface FrameSource {
   kind: 'camera' | 'video';
   video: HTMLVideoElement;
+  /** Zoom réglable (caméra uniquement ; une vidéo de test est utilisée telle quelle). */
+  zoom: ZoomControl | null;
   stop(): void;
 }
 
@@ -20,7 +24,7 @@ function makeVideo(): HTMLVideoElement {
   return v;
 }
 
-export async function openCamera(): Promise<FrameSource> {
+export async function openCamera(initialZoom = 1): Promise<FrameSource> {
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
     throw new SourceError(
       "Ce navigateur ne donne pas accès à la caméra. Ouvre l'app dans Safari à son adresse https.",
@@ -38,9 +42,12 @@ export async function openCamera(): Promise<FrameSource> {
   const video = makeVideo();
   video.srcObject = stream;
   await video.play().catch(() => {});
+  const zoom = createZoomControl(stream.getVideoTracks()[0] ?? null, initialZoom);
+  await zoom.set(zoom.value);
   return {
     kind: 'camera',
     video,
+    zoom,
     stop() {
       stream.getTracks().forEach((t) => t.stop());
       video.srcObject = null;
@@ -78,6 +85,7 @@ export async function openVideoFile(file: File): Promise<FrameSource> {
   return {
     kind: 'video',
     video,
+    zoom: null,
     stop() {
       video.pause();
       video.removeAttribute('src');
