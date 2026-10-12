@@ -1,4 +1,5 @@
 import { calibrationStillValid, detectBoard } from '../auto-run';
+import { MISS, scoreFromBoardCoords, type Score } from '../board';
 import {
   boardOverlay,
   calibrationMismatch,
@@ -11,19 +12,22 @@ import {
 import { createCameraStage, type FrameInfo } from '../camera-stage';
 import { DartDetector, type DartEvent } from '../detector/detector';
 import { h } from '../dom';
-import { frameToScreen } from '../frameview';
-import type { Mat3, Pt } from '../homography';
+import { frameToScreen, screenToFrame } from '../frameview';
+import { applyH, type Mat3, type Pt } from '../homography';
+import { showLoupe } from '../loupe';
 import type { Nav, Screen } from '../main';
 import { loadOpenCV, type CV } from '../opencv';
 import { drawBoardOverlay, fitCanvas } from '../overlay-draw';
 import { getSettings } from '../settings';
+import { Volley } from '../volley';
 
 /** Largeur des images analysées : assez pour viser, assez léger pour l'iPhone. */
 export const ANALYSIS_WIDTH = 640;
 const ANALYSIS_INTERVAL_MS = 100; // ≈10 analyses par seconde
 const RECT_SIZE = 240; // vue de face (debug)
 
-// Écran de partie : trouve la cible automatiquement, puis détecte chaque fléchette.
+// Écran de partie : trouve la cible automatiquement, détecte chaque fléchette,
+// gère la volée de 3, le retrait des fléchettes et les corrections au doigt.
 // (Les règles du jeu — 501, double out… — arrivent à l'étape 6.)
 export function gameScreen(nav: Nav): Screen {
   const cam = createCameraStage(nav);
@@ -37,32 +41,47 @@ export function gameScreen(nav: Nav): Screen {
   let detector: DartDetector | null = null;
   let detSize = { w: 0, h: 0 };
   let run = 0; // identifiant de la recherche de cible en cours
-  let darts: DartEvent[] = [];
+  let volley = new Volley();
+  let lastVolleys: number[] = [];
+  /** Fléchette sélectionnée pour une correction (par défaut la dernière). */
+  let selected = -1;
+  /** Visée au doigt en cours (coordonnées écran). */
+  let aim: Pt | null = null;
   let lockInfo = '';
   let fps = 0;
   let frames = 0;
   let lastFpsT = performance.now();
 
   // --- Éléments ---------------------------------------------------------
-  const overlay = h('canvas', { class: 'overlay' });
+  const overlay = h('canvas', { class: 'overlay interactive' });
+  const loupe = h('canvas', { class: 'loupe hidden' });
   const note = h('div', { class: 'note' });
   const lastScore = h('div', { class: 'last-score' }, '–');
-  const volley = h('div', { class: 'volley' });
-  const scorePanel = h('div', { class: 'score-panel' }, lastScore, volley);
+  const chips = h('div', { class: 'volley' });
+  const history = h('div', { class: 'history' });
+  const scorePanel = h('div', { class: 'score-panel' }, lastScore, h('div', { class: 'volley-col' }, chips, history));
   const stats = h('div', { class: 'stats' });
   const maskCanvas = h('canvas', { class: 'inset' });
   const rectCanvas = h('canvas', { class: 'inset' });
-  const insets = h('div', { class: 'insets hidden' }, h('figure', {}, maskCanvas, h('figcaption', {}, 'Masque')), h('figure', {}, rectCanvas, h('figcaption', {}, 'Vue de face')));
-  const redetectBtn = h('button', { class: 'big', onclick: () => void findBoard() }, 'Redétecter la cible');
-  const resetBtn = h('button', { class: 'big', onclick: () => resetVolley() }, 'Fléchettes retirées');
-  const manualBtn = h('button', { class: 'big', onclick: () => nav('calibrate') }, 'Ajuster à la main');
+  const insets = h(
+    'div',
+    { class: 'insets hidden' },
+    h('figure', {}, maskCanvas, h('figcaption', {}, 'Masque')),
+    h('figure', {}, rectCanvas, h('figcaption', {}, 'Vue de face')),
+  );
+  const sheet = h('div', { class: 'sheet hidden' });
+  const missBtn = h('button', { class: 'big', onclick: () => miss() }, 'Raté / 0');
+  const undoBtn = h('button', { class: 'big', onclick: () => undo() }, 'Annuler');
+  const clearBtn = h('button', { class: 'big primary', onclick: () => cleared(true) }, 'Fléchettes retirées');
+  const boardBtn = h('button', { class: 'pill', onclick: () => boardMenu() }, '🎯 Cible');
 
   cam.el.insertBefore(overlay, cam.el.children[1]);
-  cam.el.append(note);
+  cam.el.append(note, loupe, sheet);
   if (debugMode) cam.el.append(insets);
+  cam.el.querySelector('.topbar')!.insertBefore(boardBtn, cam.el.querySelector('.topbar')!.lastChild);
   // Pas de zoom pendant la partie : le changer rendrait la calibration fausse.
   cam.zoomBar.classList.add('hidden');
-  cam.dock.append(scorePanel, h('div', { class: 'calib-actions small' }, resetBtn, redetectBtn, manualBtn));
+  cam.dock.append(scorePanel, h('div', { class: 'calib-actions small' }, missBtn, undoBtn, clearBtn));
   if (debugMode) cam.dock.append(stats);
 
   function setNote(text: string, warn = false) {
@@ -77,11 +96,9 @@ export function gameScreen(nav: Nav): Screen {
     if (!kind) return;
     cal = null;
     dropDetector();
-    redetectBtn.disabled = true;
     setNote('🔎 Recherche de la cible…');
     const res = await detectBoard(cam, () => disposed || id !== run);
     if (disposed || id !== run) return;
-    redetectBtn.disabled = false;
     const f = cam.frame();
     if (res.ok && f) {
       useCalibration({
@@ -108,7 +125,7 @@ export function gameScreen(nav: Nav): Screen {
       }
     }
     setNote(
-      `⚠️ Cible non trouvée automatiquement : ${res.ok ? '' : res.reason} Vérifie qu’elle est entière et bien éclairée, puis « Redétecter », ou « Ajuster à la main ».`,
+      `⚠️ Cible non trouvée automatiquement : ${res.ok ? '' : res.reason} Vérifie qu’elle est entière et bien éclairée, puis 🎯 › « Redétecter », ou « Ajuster à la main ».`,
       true,
     );
   }
@@ -125,24 +142,197 @@ export function gameScreen(nav: Nav): Screen {
     detector = null;
   }
 
-  function resetVolley() {
-    darts = [];
-    detector?.resetReference();
-    renderVolley();
-    setNote('Nouvelle image de référence… attends « Prêt ».');
-  }
-
   cam.onChange((reason) => {
     if (reason === 'source') {
       cal = null;
       dropDetector();
       run++;
-      darts = [];
-      renderVolley();
+      volley = new Volley();
+      lastVolleys = [];
+      render();
       const start = () => (cam.frame() ? void findBoard() : cam.source && setTimeout(start, 100));
       start();
     }
   });
+
+  // --- Volée ----------------------------------------------------------------
+  function afterChange(announce?: Score) {
+    selected = volley.darts.length - 1;
+    if (announce) {
+      lastScore.textContent = announce.libelle;
+      lastScore.classList.remove('pop');
+      void lastScore.offsetWidth; // relance l'animation
+      lastScore.classList.add('pop');
+    }
+    if (volley.full) {
+      detector?.setMode('removal');
+      setNote(`Volée terminée : ${volley.total} points. Va retirer tes fléchettes.`);
+    } else {
+      detector?.setMode('throwing');
+    }
+    render();
+  }
+
+  function onDart(ev: DartEvent, img: ImageData) {
+    if (!volley.addDetected(ev.score, ev.tip, ev.board)) return;
+    if (!volley.full) setNote(`🎯 ${ev.score.libelle} (${ev.score.points} pts) — touche l’image pour corriger.`);
+    afterChange(ev.score);
+    if (debugMode) drawRectified(img);
+  }
+
+  function miss() {
+    if (volley.full) {
+      // Volée complète : « Raté » remplace la fléchette sélectionnée.
+      volley.correct(selected, MISS, null, null);
+      setNote('Fléchette corrigée : 0.');
+      afterChange(MISS);
+      return;
+    }
+    volley.addMiss();
+    detector?.noteManualDart();
+    setNote('Fléchette ratée ajoutée : 0.');
+    afterChange(MISS);
+  }
+
+  function undo() {
+    const d = volley.undo();
+    if (!d) return;
+    setNote(`Fléchette « ${d.score.libelle} » annulée.`);
+    afterChange();
+    lastScore.textContent = volley.last?.score.libelle ?? '–';
+  }
+
+  /** Volée enregistrée, nouvelle volée (fléchettes retirées, automatiquement ou au bouton). */
+  function cleared(manual: boolean) {
+    if (volley.darts.length) {
+      lastVolleys = [volley.total, ...lastVolleys].slice(0, 3);
+      setNote(`✅ Volée enregistrée : ${volley.total} points.${manual ? ' Attends « Prêt »…' : ' À toi !'}`);
+    } else if (manual) setNote('Nouvelle image de référence… attends « Prêt ».');
+    volley = new Volley();
+    if (manual) detector?.resetReference();
+    else detector?.setMode('throwing');
+    lastScore.textContent = '–';
+    afterChange();
+  }
+
+  function render() {
+    chips.replaceChildren(
+      ...[0, 1, 2].map((i) => {
+        const d = volley.darts[i];
+        const cls = 'chip' + (d ? '' : ' empty') + (d && i === selected ? ' selected' : '') + (d?.corrected || d?.origin === 'manual' ? ' fixed' : '');
+        return h('button', { class: cls, onclick: () => select(i) }, d?.score.libelle ?? '·');
+      }),
+      h('span', { class: 'total' }, `= ${volley.total}`),
+    );
+    history.textContent = lastVolleys.length ? `Volées précédentes : ${lastVolleys.join(' · ')}` : '';
+    undoBtn.disabled = volley.darts.length === 0;
+  }
+
+  function select(i: number) {
+    if (!volley.darts[i]) return;
+    selected = i;
+    render();
+    setNote(`Fléchette ${i + 1} sélectionnée (${volley.darts[i].score.libelle}) : touche l’image à l’endroit de sa pointe.`);
+  }
+
+  // --- Corrections au doigt : viser avec la loupe, puis choisir --------------
+  const local = (e: PointerEvent): Pt => {
+    const r = cam.el.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+
+  overlay.addEventListener('pointerdown', (e) => {
+    if (!detector || !cam.frame()) return;
+    hideSheet();
+    aim = local(e);
+    try {
+      overlay.setPointerCapture(e.pointerId);
+    } catch {
+      /* pas grave */
+    }
+    e.preventDefault();
+  });
+  overlay.addEventListener('pointermove', (e) => {
+    if (!aim) return;
+    aim = local(e);
+    e.preventDefault();
+  });
+  const endAim = () => {
+    if (!aim) return;
+    const p = aim;
+    aim = null;
+    loupe.classList.add('hidden');
+    pickAt(p);
+  };
+  overlay.addEventListener('pointerup', endAim);
+  overlay.addEventListener('pointercancel', () => {
+    aim = null;
+    loupe.classList.add('hidden');
+  });
+
+  /** Score à un point de l'écran : écran → cadre → image analysée → cible. */
+  function scoreAt(screen: Pt): { score: Score; tip: Pt; board: Pt } | null {
+    const f = cam.frame();
+    if (!f || !detector) return null;
+    const n = screenToFrame(f.screen, screen);
+    const tip = { x: n.x * detSize.w, y: n.y * detSize.h };
+    const board = applyH(detector.frameToBoard, tip);
+    return { score: scoreFromBoardCoords(board.x, board.y), tip, board };
+  }
+
+  function pickAt(screen: Pt) {
+    const r = scoreAt(screen);
+    if (!r) return;
+    const sel = volley.darts[selected];
+    const buttons: HTMLElement[] = [];
+    if (sel) {
+      buttons.push(
+        h('button', {
+          class: 'big primary',
+          onclick: () => {
+            volley.correct(selected, r.score, r.tip, r.board);
+            hideSheet();
+            setNote(`Fléchette ${selected + 1} corrigée : ${r.score.libelle}.`);
+            afterChange(r.score);
+            selected = volley.darts.length - 1;
+            render();
+          },
+        }, `Corriger « ${sel.score.libelle} » → ${r.score.libelle}`),
+      );
+    }
+    if (!volley.full) {
+      buttons.push(
+        h('button', {
+          class: sel ? 'big' : 'big primary',
+          onclick: () => {
+            volley.addManual(r.score, r.tip, r.board);
+            detector?.noteManualDart();
+            hideSheet();
+            setNote(`Fléchette oubliée ajoutée : ${r.score.libelle}.`);
+            afterChange(r.score);
+          },
+        }, `Ajouter une fléchette : ${r.score.libelle}`),
+      );
+    }
+    buttons.push(h('button', { class: 'big', onclick: () => hideSheet() }, 'Fermer'));
+    showSheet(`Pointe touchée : ${r.score.libelle} (${r.score.points} pts)`, buttons);
+  }
+
+  function showSheet(title: string, buttons: HTMLElement[]) {
+    sheet.replaceChildren(h('p', {}, title), ...buttons);
+    sheet.classList.remove('hidden');
+  }
+  function hideSheet() {
+    sheet.classList.add('hidden');
+  }
+
+  function boardMenu() {
+    showSheet('Cible', [
+      h('button', { class: 'big', onclick: () => (hideSheet(), void findBoard()) }, 'Redétecter la cible'),
+      h('button', { class: 'big', onclick: () => nav('calibrate') }, 'Ajuster à la main'),
+      h('button', { class: 'big', onclick: () => hideSheet() }, 'Fermer'),
+    ]);
+  }
 
   // --- Analyse des images -------------------------------------------------
   const canvas = document.createElement('canvas');
@@ -174,15 +364,17 @@ export function gameScreen(nav: Nav): Screen {
         getSettings().detector,
       );
       detSize = { w: img.width, h: img.height };
+      if (volley.full) detector.setMode('removal');
     }
     const events = detector.process(img, performance.now());
     for (const ev of events) {
       if (ev.kind === 'dart') onDart(ev, img);
+      else if (ev.kind === 'cleared') cleared(false);
       else if (ev.kind === 'moved') {
         setNote('Le trépied a bougé : nouvelle détection de la cible…', true);
         void findBoard();
         return;
-      } else if (ev.kind === 'ignored' && ev.reason === 'big') {
+      } else if (ev.kind === 'ignored' && ev.reason === 'big' && !volley.full) {
         setNote('Quelque chose est devant la cible… J’attends que la vue se libère.');
       } else if (ev.kind === 'reference') {
         setNote('🟢 Prêt ! Lance tes fléchettes.');
@@ -199,27 +391,6 @@ export function gameScreen(nav: Nav): Screen {
     }
   }
 
-  function onDart(ev: DartEvent, img: ImageData) {
-    if (darts.length >= 3) darts = []; // provisoire : une volée = 3 fléchettes (étape 5 : retrait)
-    darts.push(ev);
-    lastScore.textContent = ev.score.libelle;
-    lastScore.classList.remove('pop');
-    void lastScore.offsetWidth; // relance l'animation
-    lastScore.classList.add('pop');
-    renderVolley();
-    setNote(`🎯 ${ev.score.libelle} (${ev.score.points} pts)`);
-    if (debugMode) drawRectified(img);
-  }
-
-  function renderVolley() {
-    const total = darts.reduce((s, d) => s + d.score.points, 0);
-    volley.replaceChildren(
-      ...[0, 1, 2].map((i) => h('span', { class: 'chip' + (darts[i] ? '' : ' empty') }, darts[i]?.score.libelle ?? '·')),
-      h('span', { class: 'total' }, `= ${total}`),
-    );
-    if (!darts.length) lastScore.textContent = '–';
-  }
-
   // --- Dessin -------------------------------------------------------------
   function toScreen(f: FrameInfo, p: Pt): Pt {
     return frameToScreen(f.screen, { x: p.x / detSize.w, y: p.y / detSize.h });
@@ -233,7 +404,8 @@ export function gameScreen(nav: Nav): Screen {
     const refW = 1000;
     const refH = refW / (f.crop.w / f.crop.h);
     const B2F = tryBoardToFrame(cal.points, refW, refH);
-    if (B2F) drawBoardOverlay(c, boardOverlay(B2F, refW, refH), (p) => frameToScreen(f.screen, p), { alpha: debugMode ? 0.6 : 0.35, numbers: false });
+    const ov = B2F ? boardOverlay(B2F, refW, refH) : null;
+    if (ov) drawBoardOverlay(c, ov, (p) => frameToScreen(f.screen, p), { alpha: debugMode ? 0.6 : 0.35, numbers: false });
     if (!detSize.w) return;
 
     if (debugMode && detector?.debug.contour) {
@@ -259,9 +431,10 @@ export function gameScreen(nav: Nav): Screen {
       }
     }
     // Impacts de la volée en cours.
-    darts.forEach((d, i) => {
+    volley.darts.forEach((d, i) => {
+      if (!d.tip) return;
       const s = toScreen(f, d.tip);
-      dot(c, s, i === darts.length - 1 ? '#ff2020' : '#ffae00', 7);
+      dot(c, s, i === selected ? '#ff2020' : '#ffae00', i === selected ? 8 : 6);
       c.font = 'bold 16px -apple-system, sans-serif';
       c.fillStyle = '#fff';
       c.strokeStyle = 'rgba(0,0,0,0.8)';
@@ -269,6 +442,25 @@ export function gameScreen(nav: Nav): Screen {
       c.strokeText(d.score.libelle, s.x + 10, s.y - 10);
       c.fillText(d.score.libelle, s.x + 10, s.y - 10);
     });
+
+    // Visée au doigt : loupe + score sous le viseur.
+    const v = cam.source?.video;
+    if (aim && v) {
+      const n = screenToFrame(f.screen, aim);
+      showLoupe(loupe, v, f, n, aim, cam.el.clientWidth, (lc, toLoupe) => {
+        if (ov) drawBoardOverlay(lc, ov, (q) => toLoupe(frameToScreen(f.screen, q)), { alpha: 0.7, lineWidth: 1, numbers: false });
+        const r = scoreAt(aim!);
+        if (r) {
+          lc.font = 'bold 22px -apple-system, sans-serif';
+          lc.textAlign = 'center';
+          lc.lineWidth = 4;
+          lc.strokeStyle = 'rgba(0,0,0,0.85)';
+          lc.fillStyle = '#ffe14d';
+          lc.strokeText(r.score.libelle, 75, 140);
+          lc.fillText(r.score.libelle, 75, 140);
+        }
+      });
+    }
   }
 
   function dot(c: CanvasRenderingContext2D, p: Pt, color: string, r: number) {
@@ -295,10 +487,10 @@ export function gameScreen(nav: Nav): Screen {
       maskTmp.height = d.mask.height;
       const id = new ImageData(d.mask.width, d.mask.height);
       for (let i = 0; i < d.mask.data.length; i++) {
-        const v = d.mask.data[i];
-        id.data[4 * i] = v;
-        id.data[4 * i + 1] = v;
-        id.data[4 * i + 2] = v;
+        const val = d.mask.data[i];
+        id.data[4 * i] = val;
+        id.data[4 * i + 1] = val;
+        id.data[4 * i + 2] = val;
         id.data[4 * i + 3] = 255;
       }
       maskTmp.getContext('2d')!.putImageData(id, 0, 0);
@@ -309,12 +501,13 @@ export function gameScreen(nav: Nav): Screen {
       maskCanvas.style.height = `${hh}px`;
       c.drawImage(maskTmp, 0, 0, w, hh);
     }
-    const stateFr = { warmup: 'référence…', watching: 'à l’affût', moving: 'mouvement' }[d.state];
+    const stateFr = { warmup: 'référence…', watching: 'à l’affût', moving: 'mouvement', removal: 'attente du retrait' }[d.state];
     stats.textContent =
       `${stateFr} · ${fps.toFixed(1)} img/s · ${d.processMs.toFixed(0)} ms` +
       (d.analyseMs != null ? ` (analyse ${d.analyseMs.toFixed(0)} ms)` : '') +
       ` · mvt ${d.motion}/${d.motionLimit.toFixed(0)} · décalage ${d.shift.x.toFixed(1)},${d.shift.y.toFixed(1)} px` +
       (d.area != null ? ` · aire ${d.area.toFixed(0)} (min ${d.minArea.toFixed(0)}, max ${d.maxArea.toFixed(0)})` : '') +
+      (d.cleanDiff != null ? ` · retrait ${d.cleanDiff}/${d.minArea.toFixed(0)}` : '') +
       (d.tip ? ` · confiance ${(d.tip.confidence * 100).toFixed(0)} %` : '') +
       ` · focale ${detector?.cam ? `${detector.cam.focal.toFixed(0)}${detector.cam.focalEstimated ? '' : ' (défaut)'}` : '?'}` +
       ` · ${lockInfo || 'exposition auto'}`;
@@ -344,7 +537,8 @@ export function gameScreen(nav: Nav): Screen {
       Mm.delete();
     }
     const g = rectCanvas.getContext('2d')!;
-    darts.forEach((d) => {
+    volley.darts.forEach((d) => {
+      if (!d.board) return;
       g.beginPath();
       g.arc(c + k * d.board.x, c - k * d.board.y, 4, 0, Math.PI * 2);
       g.fillStyle = '#ff2020';
@@ -374,7 +568,7 @@ export function gameScreen(nav: Nav): Screen {
     loop();
   });
 
-  renderVolley();
+  render();
   draw();
 
   return {

@@ -38,9 +38,14 @@ export type DetectorEvent =
   | { kind: 'reference' }
   /** L'image s'est décalée durablement : trépied bougé, il faut recalibrer. */
   | { kind: 'moved'; shift: Pt }
+  /** La cible est redevenue comme au début de la volée : fléchettes retirées. */
+  | { kind: 'cleared' }
   | { kind: 'ignored'; reason: 'small' | 'big' | 'no-tip'; area: number };
 
-export type DetectorState = 'warmup' | 'watching' | 'moving';
+export type DetectorState = 'warmup' | 'watching' | 'moving' | 'removal';
+
+/** « throwing » : on cherche les fléchettes ; « removal » : volée finie, on attend le retrait. */
+export type DetectorMode = 'throwing' | 'removal';
 
 export interface DetectorDebug {
   state: DetectorState;
@@ -58,6 +63,8 @@ export interface DetectorDebug {
   maxArea: number;
   processMs: number;
   analyseMs?: number;
+  /** Pixels encore différents de l'image de début de volée (retrait des fléchettes). */
+  cleanDiff?: number;
 }
 
 export interface Calib {
@@ -167,6 +174,11 @@ export class DartDetector {
   private shifts: { t: number; x: number; y: number }[] = [];
   /** Image nettement décalée par rapport à l'ancrage : on n'analyse pas (trépied bougé ?). */
   private shifted = false;
+  private mode: DetectorMode = 'throwing';
+  /** Image de la cible au début de la volée (sans fléchette de cette volée). */
+  private volleyStart: any = null;
+  /** Fléchettes comptées depuis le début de la volée (détectées ou ajoutées à la main). */
+  private dartsSinceStart = 0;
 
   constructor(cv: CV, calib: Calib, params: Partial<DetectorParams> = {}) {
     this.cv = cv;
@@ -221,7 +233,28 @@ export class DartDetector {
   resetReference() {
     this.ref?.delete();
     this.ref = null;
+    this.mode = 'throwing';
     this.debug.state = 'warmup';
+  }
+
+  /**
+   * Volée finie (3 fléchettes) : on arrête de chercher des fléchettes — le joueur va
+   * passer devant la cible — et on attend que la cible redevienne vide.
+   */
+  setMode(mode: DetectorMode) {
+    this.mode = mode;
+  }
+
+  /** Une fléchette a été ajoutée à la main (la détection l'avait ratée). */
+  noteManualDart() {
+    this.dartsSinceStart++;
+  }
+
+  private startVolley(cur: any) {
+    this.volleyStart?.delete();
+    this.volleyStart = cur.clone();
+    this.dartsSinceStart = 0;
+    this.mode = 'throwing';
   }
 
   get hasReference() {
@@ -325,20 +358,31 @@ export class DartDetector {
         // Première référence : on attend un peu plus longtemps que tout soit bien immobile.
         if (!moving && !this.shifted && stableFor >= Math.max(this.params.stableMs, 1000)) {
           this.ref = cur.clone();
+          this.startVolley(cur);
           this.sawMotion = false;
           this.lastAnalyse = t;
           events.push({ kind: 'reference' });
         }
       } else {
-        this.debug.state = moving ? 'moving' : 'watching';
+        this.debug.state = moving ? 'moving' : this.mode === 'removal' ? 'removal' : 'watching';
         // Analyse après un mouvement, ou de temps en temps par sécurité (mouvement manqué).
         const settled = this.sawMotion && stableFor >= this.params.stableMs;
         const periodic = !this.sawMotion && stableFor >= this.params.stableMs && t - this.lastAnalyse > 1500;
-        if (settled || periodic) {
+        if ((settled || periodic) && !this.shifted) {
           this.sawMotion = false;
           this.lastAnalyse = t;
-          const ev = this.analyse(cur);
-          if (ev) events.push(ev);
+          if ((this.dartsSinceStart > 0 || this.mode === 'removal') && this.isClean(cur)) {
+            // Cible vide comme au début de la volée : les fléchettes ont été retirées.
+            this.replaceRef(cur);
+            this.startVolley(cur);
+            events.push({ kind: 'cleared' });
+          } else if (this.mode === 'throwing') {
+            const ev = this.analyse(cur);
+            if (ev) {
+              if (ev.kind === 'dart') this.dartsSinceStart++;
+              events.push(ev);
+            }
+          }
         }
       }
     } finally {
@@ -347,6 +391,29 @@ export class DartDetector {
       this.debug.processMs = performance.now() - t0;
     }
     return events;
+  }
+
+  /** L'image ressemble-t-elle à celle du début de la volée (aucune fléchette plantée) ? */
+  private isClean(cur: any): boolean {
+    if (!this.volleyStart) return false;
+    const cv = this.cv;
+    const norm = new cv.Mat();
+    const d = new cv.Mat();
+    try {
+      const mRef = cv.mean(this.volleyStart, this.zone)[0];
+      const mCur = cv.mean(cur, this.zone)[0];
+      cur.convertTo(norm, -1, mCur > 1 ? mRef / mCur : 1, 0);
+      cv.absdiff(this.volleyStart, norm, d);
+      cv.threshold(d, d, this.params.diffThreshold, 255, cv.THRESH_BINARY);
+      cv.bitwise_and(d, this.zone, d);
+      cv.morphologyEx(d, d, cv.MORPH_OPEN, this.kOpen);
+      const changed = cv.countNonZero(d);
+      this.debug.cleanDiff = changed;
+      return changed < this.minArea;
+    } finally {
+      norm.delete();
+      d.delete();
+    }
   }
 
   private analyse(cur: any): DetectorEvent | null {
@@ -476,6 +543,8 @@ export class DartDetector {
   dispose() {
     this.prev?.delete();
     this.ref?.delete();
+    this.volleyStart?.delete();
+    this.volleyStart = null;
     this.zone.delete();
     this.kOpen.delete();
     this.kClose.delete();

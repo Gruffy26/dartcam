@@ -136,9 +136,22 @@ run('vidéo réelle — détection des fléchettes', () => {
     const darts: string[] = [];
     let total = 0;
     let worst = 0;
+    const removalAt = new Set<number>();
     for (let i = calFrame; i < meta.count; i++) {
       const frame = loadFrame(i);
       const t0 = performance.now();
+      // Comme une partie : après 3 fléchettes, attente du retrait ; RETIRE=150 simule un
+      // appui sur « Fléchettes retirées » à l'image 150.
+      if (process.env.VOLLEY) {
+        if (darts.length > 0 && darts.length % 3 === 0 && !removalAt.has(darts.length)) {
+          removalAt.add(darts.length);
+          det.setMode('removal');
+        }
+        if (Number(process.env.RETIRE) === i) {
+          det.resetReference();
+          console.log(i, '« Fléchettes retirées » (appui)');
+        }
+      }
       const evs = det.process(frame, i * dt);
       const ms = performance.now() - t0;
       total += ms;

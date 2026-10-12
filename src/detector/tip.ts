@@ -302,6 +302,7 @@ export function locateDart(xy: ArrayLike<number>, outDir: Pt, maxAngleDeg = 35):
     return seed / 4294967296;
   };
   let best = { count: -1, px: 0, py: 0, dx: 0, dy: 0 };
+  const bins = new Set<number>();
   for (let it = 0; it < 500; it++) {
     const i = Math.floor(rand() * m);
     const j = Math.floor(rand() * m);
@@ -312,20 +313,25 @@ export function locateDart(xy: ArrayLike<number>, outDir: Pt, maxAngleDeg = 35):
     const ux = dx / len;
     const uy = dy / len;
     if (Math.abs(ux * outDir.x + uy * outDir.y) < cosMax) continue;
-    let count = 0;
+    // Score = longueur couverte (tranches de 3 px occupées le long de la droite) :
+    // le fût, long et fin, l'emporte sur l'empennage, court et épais.
+    bins.clear();
     for (let k = 0; k < m; k++) {
-      if (Math.abs((sx[k] - sx[i]) * uy - (sy[k] - sy[i]) * ux) < 2) count++;
+      const ex = sx[k] - sx[i];
+      const ey = sy[k] - sy[i];
+      if (Math.abs(ex * uy - ey * ux) < 2) bins.add(Math.round((ex * ux + ey * uy) / 3));
     }
+    const count = bins.size;
     if (count > best.count) best = { count, px: sx[i], py: sy[i], dx: ux, dy: uy };
   }
-  if (best.count < 8) return null;
+  if (best.count < 5) return null;
 
   // Affinage : axe principal des pixels proches de la droite trouvée.
   const inl: number[] = [];
   for (let k = 0; k < n; k++) {
     const x = xy[2 * k];
     const y = xy[2 * k + 1];
-    if (Math.abs((x - best.px) * best.dy - (y - best.py) * best.dx) < 2.5) inl.push(x, y);
+    if (Math.abs((x - best.px) * best.dy - (y - best.py) * best.dx) < 3) inl.push(x, y);
   }
   const ax = principalAxis(inl);
   let v = ax.v;
@@ -333,10 +339,11 @@ export function locateDart(xy: ArrayLike<number>, outDir: Pt, maxAngleDeg = 35):
   const s = [];
   for (let k = 0; k < inl.length; k += 2) s.push((inl[k] - ax.mean.x) * v.x + (inl[k + 1] - ax.mean.y) * v.y);
   s.sort((a, b) => a - b);
-  // Depuis le milieu, on descend vers la pointe tant que les trous restent petits.
+  // Depuis le milieu, on descend vers la pointe tant que les trous restent petits
+  // (≤ 20 px : seuls les pixels alignés sur la droite comptent, rien d’autre ne peut s’y rattacher).
   const mid = s.length >> 1;
   let lo = mid;
-  while (lo > 0 && s[lo] - s[lo - 1] < 12) lo--;
+  while (lo > 0 && s[lo] - s[lo - 1] < 20) lo--;
   let hi = mid;
   while (hi < s.length - 1 && s[hi + 1] - s[hi] < 25) hi++;
   // Recentrage : un fût brillant ne « change » souvent que sur ses bords ; la droite

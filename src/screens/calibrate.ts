@@ -15,13 +15,12 @@ import { h } from '../dom';
 import { frameToScreen, screenToFrame } from '../frameview';
 import type { Pt } from '../homography';
 import type { Nav, Screen } from '../main';
+import { showLoupe } from '../loupe';
 import { drawBoardOverlay, fitCanvas } from '../overlay-draw';
 
 /** Taille de référence du cadre pour les calculs d'homographie (seul le rapport compte). */
 const REF_W = 1000;
 
-const LOUPE_SIZE = 150;
-const LOUPE_ZOOM = 3;
 /** Distance (px) en dessous de laquelle un toucher attrape un repère existant. */
 const GRAB_RADIUS = 40;
 /** Un repère déplacé bouge 2× moins vite que le doigt : réglage fin. */
@@ -308,39 +307,9 @@ export function calibrateScreen(nav: Nav): Screen {
     }
     const p = points[drag.index];
     const center = toScreen(p);
-    const ctx = fitCanvas(loupe, LOUPE_SIZE, LOUPE_SIZE);
-    const dispScale = f.screen.w / f.crop.w; // px écran par px vidéo
-    const srcSize = LOUPE_SIZE / (dispScale * LOUPE_ZOOM);
-    const vx = f.crop.x + p.x * f.crop.w;
-    const vy = f.crop.y + p.y * f.crop.h;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, LOUPE_SIZE, LOUPE_SIZE);
-    ctx.drawImage(v, vx - srcSize / 2, vy - srcSize / 2, srcSize, srcSize, 0, 0, LOUPE_SIZE, LOUPE_SIZE);
-    const toLoupe = (q: Pt) => {
-      const s = toScreen(q);
-      return { x: (s.x - center.x) * LOUPE_ZOOM + LOUPE_SIZE / 2, y: (s.y - center.y) * LOUPE_ZOOM + LOUPE_SIZE / 2 };
-    };
-    if (ov) drawBoardOverlay(ctx, ov, toLoupe, { alpha: 0.8, lineWidth: 1, numbers: false });
-    const c = LOUPE_SIZE / 2;
-    ctx.strokeStyle = '#2af5ff';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(c - 20, c);
-    ctx.lineTo(c - 4, c);
-    ctx.moveTo(c + 4, c);
-    ctx.lineTo(c + 20, c);
-    ctx.moveTo(c, c - 20);
-    ctx.lineTo(c, c - 4);
-    ctx.moveTo(c, c + 4);
-    ctx.lineTo(c, c + 20);
-    ctx.stroke();
-
-    const W = cam.el.clientWidth;
-    const above = center.y - 50 - LOUPE_SIZE > 70;
-    const left = Math.min(Math.max(center.x - LOUPE_SIZE / 2, 8), W - LOUPE_SIZE - 8);
-    const top = above ? center.y - 50 - LOUPE_SIZE : center.y + 50;
-    loupe.style.transform = `translate(${left}px, ${top}px)`;
-    loupe.classList.remove('hidden');
+    showLoupe(loupe, v, f, p, center, cam.el.clientWidth, (ctx, toLoupe) => {
+      if (ov) drawBoardOverlay(ctx, ov, (q) => toLoupe(toScreen(q)), { alpha: 0.8, lineWidth: 1, numbers: false });
+    });
   }
 
   updateUi();
