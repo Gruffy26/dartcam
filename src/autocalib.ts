@@ -91,7 +91,7 @@ const mod = (a: number, m: number) => ((a % m) + m) % m;
 /** Couleur attendue de l'anneau double/triple du secteur d'indice i (20 = rouge). */
 const ringColor = (i: number) => (i % 2 === 0 ? RED : GREEN);
 
-interface Ellipse {
+export interface Ellipse {
   cx: number;
   cy: number;
   a: number; // demi-axe le long de `angle`
@@ -100,7 +100,7 @@ interface Ellipse {
 }
 
 /** Point de l'ellipse : t en degrés, sens horaire à l'écran, k = fraction du rayon. */
-function ellipsePoint(e: Ellipse, tDeg: number, k: number): Pt {
+export function ellipsePoint(e: Ellipse, tDeg: number, k: number): Pt {
   const t = (tDeg * Math.PI) / 180;
   const c = Math.cos(e.angle);
   const s = Math.sin(e.angle);
@@ -112,7 +112,9 @@ function ellipsePoint(e: Ellipse, tDeg: number, k: number): Pt {
 function findOuterEllipse(cv: CV, map: ClassMap): Ellipse | null {
   const { width, height } = map;
   const mask = new cv.Mat(height, width, cv.CV_8UC1);
-  const kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5));
+  // Fermeture assez large pour reboucher l'anneau là où une fléchette le recouvre.
+  const k = 5;
+  const kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(k, k));
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
   try {
@@ -120,33 +122,177 @@ function findOuterEllipse(cv: CV, map: ClassMap): Ellipse | null {
     for (let i = 0; i < m.length; i++) m[i] = map.cls[i] ? 255 : 0;
     cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, kernel);
     cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE);
-    let best = -1;
+    // Le plus grand ensemble rouge+vert, mesuré par son enveloppe convexe
+    // (un anneau entamé par une fléchette garde la même enveloppe).
+    let bestPts: number[] | null = null;
     let bestArea = width * height * 0.02;
     for (let i = 0; i < contours.size(); i++) {
       const c = contours.get(i);
-      const area = cv.contourArea(c);
-      if (area > bestArea && c.rows >= 5) {
-        bestArea = area;
-        best = i;
+      if (c.rows >= 5) {
+        const hull = new cv.Mat();
+        cv.convexHull(c, hull, false, true);
+        const area = cv.contourArea(hull);
+        if (area > bestArea) {
+          bestArea = area;
+          // Ajustement sur le contour lui-même (les logos en dépassent, ils seront écartés).
+          bestPts = Array.from(c.data32S as Int32Array);
+        }
+        hull.delete();
       }
       c.delete();
     }
-    if (best < 0) return null;
-    const c = contours.get(best);
-    const rr = cv.fitEllipse(c);
-    c.delete();
-    const a = rr.size.width / 2;
-    const b = rr.size.height / 2;
-    if (!(a > 10 && b > 10) || Math.min(a, b) / Math.max(a, b) < 0.25) return null;
-    // L'ellipse doit être bien remplie par le contour (sinon ce n'est pas un anneau).
-    if (bestArea / (Math.PI * a * b) < 0.75) return null;
-    return { cx: rr.center.x, cy: rr.center.y, a, b, angle: (rr.angle * Math.PI) / 180 };
+    if (!bestPts) return null;
+    const e = robustEllipse(cv, bestPts);
+    if (!e) return null;
+    if (!(e.a > 10 && e.b > 10) || Math.min(e.a, e.b) / Math.max(e.a, e.b) < 0.25) return null;
+    // L'enveloppe doit bien remplir l'ellipse (sinon ce n'est pas un anneau).
+    if (bestArea / (Math.PI * e.a * e.b) < 0.75) return null;
+    return e;
   } finally {
     mask.delete();
     kernel.delete();
     contours.delete();
     hierarchy.delete();
   }
+}
+
+/**
+ * Ellipse du bord extérieur du double, trouvée par des rayons lancés depuis un centre
+ * approximatif. Sur chaque rayon, on repère les passages colorés (bull, triple, double,
+ * éventuellement un logo) et on garde la paire triple/double dont le rapport des
+ * distances vaut ≈ 1,6 (103 → 166 mm) : les logos et les fléchettes sont ainsi écartés.
+ */
+function ringEllipse(cv: CV, map: ClassMap, center: Pt): Ellipse | null {
+  const maxR = Math.max(map.width, map.height);
+  const edge: number[] = [];
+  for (let k = 0; k < 360; k++) {
+    const a = (k * Math.PI) / 180;
+    const dx = Math.sin(a);
+    const dy = -Math.cos(a);
+    const runs: { start: number; end: number }[] = [];
+    let cur: { start: number; end: number } | null = null;
+    let gap = 0;
+    for (let r = 2; r < maxR; r += 0.75) {
+      const x = center.x + dx * r;
+      const y = center.y + dy * r;
+      if (x < 0 || y < 0 || x >= map.width || y >= map.height) break;
+      if (map.at({ x, y }) !== NONE) {
+        if (cur) cur.end = r;
+        else cur = { start: r, end: r };
+        gap = 0;
+      } else if (cur && ++gap > 3) {
+        runs.push(cur);
+        cur = null;
+      }
+    }
+    if (cur) runs.push(cur);
+    let best: { ratio: number; outer: number } | null = null;
+    for (let i = 0; i < runs.length; i++) {
+      for (let j = i + 1; j < runs.length; j++) {
+        const ti = runs[i];
+        const dj = runs[j];
+        const wi = ti.end - ti.start;
+        const wj = dj.end - dj.start;
+        if (wi < 1.5 || wj < 1.5) continue;
+        const ratio = (dj.start + dj.end) / (ti.start + ti.end);
+        if (ratio < 1.4 || ratio > 1.95 || wj / wi > 3 || wi / wj > 3) continue;
+        if (!best || Math.abs(ratio - 1.61) < Math.abs(best.ratio - 1.61)) best = { ratio, outer: dj.end };
+      }
+    }
+    if (best) edge.push(Math.round(center.x + dx * best.outer), Math.round(center.y + dy * best.outer));
+  }
+  if (edge.length < 2 * 120) return null;
+  return robustEllipse(cv, edge);
+}
+
+/** Centre approximatif de la cible : centre de l'ellipse du contour, sinon barycentre des couleurs. */
+function roughCenter(cv: CV, map: ClassMap): Pt | null {
+  const e = findOuterEllipse(cv, map);
+  if (e) return { x: e.cx, y: e.cy };
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (let y = 0; y < map.height; y += 2)
+    for (let x = 0; x < map.width; x += 2)
+      if (map.cls[y * map.width + x]) {
+        sx += x;
+        sy += y;
+        n++;
+      }
+  return n > 200 ? { x: sx / n, y: sy / n } : null;
+}
+
+function findDoubleEllipse(cv: CV, map: ClassMap): Ellipse | null {
+  let c = roughCenter(cv, map);
+  let e: Ellipse | null = null;
+  for (let iter = 0; iter < 3 && c; iter++) {
+    const next = ringEllipse(cv, map, c);
+    if (!next) break;
+    e = next;
+    c = { x: e.cx, y: e.cy };
+  }
+  if (!e || !(e.a > 10 && e.b > 10) || Math.min(e.a, e.b) / Math.max(e.a, e.b) < 0.25) return null;
+  return e;
+}
+
+/**
+ * Ellipse ajustée sur le contour en écartant les points qui en dépassent : les logos
+ * rouges (« unicorn », « ECLIPSE »…) collés au double déforment sinon l'ellipse.
+ */
+function robustEllipse(cv: CV, xy: number[]): Ellipse | null {
+  let pts = xy;
+  let e: Ellipse | null = null;
+  for (let iter = 0; iter < 5; iter++) {
+    if (pts.length < 10) return e;
+    const m = cv.matFromArray(pts.length / 2, 1, cv.CV_32SC2, pts);
+    const rr = cv.fitEllipse(m);
+    m.delete();
+    e = { cx: rr.center.x, cy: rr.center.y, a: rr.size.width / 2, b: rr.size.height / 2, angle: (rr.angle * Math.PI) / 180 };
+    if (!(e.a > 0 && e.b > 0)) return null;
+    // Distance « radiale » normalisée de chaque point (1 = sur l'ellipse).
+    const c = Math.cos(e.angle);
+    const s = Math.sin(e.angle);
+    const d: number[] = [];
+    for (let i = 0; i < pts.length; i += 2) {
+      const x = pts[i] - e.cx;
+      const y = pts[i + 1] - e.cy;
+      const u = (x * c + y * s) / e.a;
+      const v = (-x * s + y * c) / e.b;
+      d.push(Math.hypot(u, v));
+    }
+    const sorted = [...d].sort((p, q) => p - q);
+    const med = sorted[Math.floor(sorted.length / 2)];
+    const mad = [...d.map((x) => Math.abs(x - med))].sort((p, q) => p - q)[Math.floor(d.length / 2)];
+    const tol = Math.max(0.012, 2.5 * mad);
+    const kept: number[] = [];
+    d.forEach((di, k) => {
+      if (Math.abs(di - med) <= tol) kept.push(pts[2 * k], pts[2 * k + 1]);
+    });
+    if (kept.length === pts.length) break;
+    pts = kept;
+  }
+  return e;
+}
+
+/** Supprime les petits segments parasites (reflet, logo, fil) : ils créent deux fausses frontières. */
+function cleanTransitions(trans: number[], minSpan: number): number[] {
+  const t = [...trans];
+  while (t.length > 2) {
+    let smallest = -1;
+    let span = Infinity;
+    for (let j = 0; j < t.length; j++) {
+      const sp = mod(t[(j + 1) % t.length] - t[j], 360);
+      if (sp < span) {
+        span = sp;
+        smallest = j;
+      }
+    }
+    if (span >= minSpan) break;
+    const j2 = (smallest + 1) % t.length;
+    t.splice(Math.max(smallest, j2), 1);
+    t.splice(Math.min(smallest, j2), 1);
+  }
+  return t;
 }
 
 /** Transitions rouge↔vert le long d'un parcours échantillonné (angles en degrés). */
@@ -176,7 +322,7 @@ function initialHomography(map: ClassMap, e: Ellipse): Mat3 | null {
       const t = (j * 360) / N;
       return { t, c: map.at(ellipsePoint(e, t, k)) };
     });
-    const trans = transitions(samples, 6);
+    const trans = cleanTransitions(transitions(samples, 6), 7);
     if (trans.length !== 20) continue;
 
     // Couleur et position du milieu de chaque segment (entre deux frontières).
@@ -362,11 +508,21 @@ export function blurForClassification(cv: CV, img: RgbaImage): RgbaImage {
   }
 }
 
-export function autoCalibrate(cv: CV, img: RgbaImage): AutoCalibResult {
+/** Informations intermédiaires, pour le débogage et les tests. */
+export interface AutoCalibDebug {
+  cls?: Uint8Array;
+  ellipse?: Ellipse | null;
+}
+
+export function autoCalibrate(cv: CV, img: RgbaImage, debug?: AutoCalibDebug): AutoCalibResult {
   const cls = classifyPixels(blurForClassification(cv, img));
   const map = new ClassMap(cls, img.width, img.height);
 
-  const ellipse = findOuterEllipse(cv, map);
+  const ellipse = findDoubleEllipse(cv, map);
+  if (debug) {
+    debug.cls = cls;
+    debug.ellipse = ellipse;
+  }
   if (!ellipse) return { ok: false, reason: 'Je ne trouve pas les anneaux rouges et verts de la cible.' };
 
   let H = initialHomography(map, ellipse);
