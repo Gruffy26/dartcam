@@ -160,6 +160,8 @@ input { font: inherit; color: inherit; }
 .row-sub { font-size: 0.85rem; color: var(--muted); }
 .group-body > .segmented { margin: 10px; }
 .group-body > .stack { padding: 12px 16px 16px; }
+.group-body > .btn.block { width: calc(100% - 20px); margin: 10px; }
+.group-body > .row + .btn.block { margin-top: 0; }
 
 /* Interrupteur façon iOS */
 .switch { position: relative; flex: none; width: 52px; height: 32px; }

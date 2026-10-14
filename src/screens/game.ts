@@ -4,6 +4,7 @@ import {
   calibrationMismatch,
   frameToBoard,
   loadCalibration,
+  reprojectionError,
   saveCalibration,
   tryBoardToFrame,
   type Calibration,
@@ -23,7 +24,8 @@ import { drawBoardOverlay, fitCanvas } from '../overlay-draw';
 import { getSettings } from '../settings';
 import { speak } from '../speech';
 import { appBar, iconButton, openSheet, type SheetHandle } from '../ui';
-import { Volley } from '../volley';
+import { Volley, type DartRecord } from '../volley';
+import { addVolley } from '../dataset';
 import { openCorrection } from './correct';
 
 /** Largeur des images analysées : assez pour viser, assez léger pour l'iPhone. */
@@ -255,8 +257,16 @@ export function gameScreen(nav: Nav): Screen {
   }
 
   /** Fléchettes retirées (automatiquement ou au bouton) : la volée est enregistrée. */
+  /** Garde les fléchettes de la volée pour améliorer la détection (si l'option est active). */
+  function capture(darts: DartRecord[], note = '') {
+    if (!getSettings().collect || !darts.length) return;
+    const err = cal && detSize.w ? reprojectionError(cal.points, detSize.w, detSize.h) : 0;
+    void addVolley(darts, new Map(shots), cal, err, getSettings().detector, __BUILD_ID__, note);
+  }
+
   function cleared(manual: boolean) {
     if (volley.darts.length && game.winner == null) {
+      capture(volley.darts);
       const before = game.current;
       game = commitTurn(game, volley.darts.map((d) => d.score));
       const last = game.turns[game.turns.length - 1];
@@ -388,6 +398,8 @@ export function gameScreen(nav: Nav): Screen {
         afterChange();
       },
       onDelete: () => {
+        // Fléchette détectée à tort : l'exemple est précieux, on le garde avant d'effacer.
+        if (d.origin === 'auto') capture([d], 'supprimee');
         volley.darts.splice(i, 1);
         shots.delete(d.id);
         setStatus(`Fléchette ${d.score.libelle} supprimée`, 'info');

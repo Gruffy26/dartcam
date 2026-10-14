@@ -1,7 +1,9 @@
 import { DEFAULT_PARAMS, PARAM_SPECS, type DetectorParams } from '../detector/params';
 import { h } from '../dom';
+import { icon } from '../icons';
 import type { Nav } from '../main';
 import { getSettings, updateSettings } from '../settings';
+import { buildExport, clearSamples, download, sampleCount } from '../dataset';
 import { appBar, group, row, segmented, toggle } from '../ui';
 
 export function settingsScreen(nav: Nav): HTMLElement {
@@ -42,6 +44,34 @@ export function settingsScreen(nav: Nav): HTMLElement {
     advanced.classList.toggle('hidden');
   });
 
+  // Collecte d'exemples : nombre gardé, export en ZIP, effacement.
+  const countRow = row('Exemples enregistrés', 'Chargement…', null);
+  const sub = () => countRow.querySelector('.row-sub');
+  const refresh = () => {
+    void sampleCount().then((n) => {
+      const el = sub();
+      if (el) el.textContent = n ? `${n} fléchette${n > 1 ? 's' : ''} gardée${n > 1 ? 's' : ''} sur le téléphone` : 'Aucun exemple pour le moment';
+      exportBtn.disabled = n === 0;
+      clearBtn.disabled = n === 0;
+    });
+  };
+  const exportBtn = h('button', { class: 'btn primary block' }, icon('download', 20), 'Exporter en ZIP');
+  exportBtn.addEventListener('click', () => {
+    exportBtn.disabled = true;
+    exportBtn.textContent = 'Préparation…';
+    void buildExport().then((res) => {
+      exportBtn.replaceChildren(icon('download', 20), document.createTextNode('Exporter en ZIP'));
+      exportBtn.disabled = false;
+      if (res) download(res.blob, res.name);
+    });
+  });
+  const clearBtn = h('button', { class: 'btn danger block' }, icon('trash', 20), 'Effacer les exemples');
+  clearBtn.addEventListener('click', () => {
+    if (!confirm('Effacer tous les exemples enregistrés ?')) return;
+    void clearSamples().then(refresh);
+  });
+  refresh();
+
   return h(
     'main',
     { class: 'page settings' },
@@ -67,6 +97,13 @@ export function settingsScreen(nav: Nav): HTMLElement {
       advRow,
     ),
     advanced,
+    group(
+      'Amélioration de la détection',
+      row('Garder les images', 'Reste sur le téléphone, rien n’est envoyé', toggle(s.collect, (v) => updateSettings({ collect: v }), 'Garder les images')),
+      countRow,
+      exportBtn,
+      clearBtn,
+    ),
     group('À propos', row('Version', __BUILD_ID__, null), row('Recharger l’app', 'Pour récupérer la dernière version', null, () => location.reload())),
   );
 }
