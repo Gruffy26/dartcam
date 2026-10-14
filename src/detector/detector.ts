@@ -21,8 +21,15 @@ import { cameraFromHomography, defaultFocalFor, outDirection, project, type Came
 import { DEFAULT_PARAMS, type DetectorParams } from './params';
 import { extendTip, findTip, locateDart, mergeAlongAxis, type TipResult } from './tip';
 
-/** Débordement du changement au-delà du bout réel, dû au flou des images (px). */
-const TIP_BLUR_PX = 1.5;
+/**
+ * Débordement du changement au-delà du vrai bout de la fléchette, en pixels de l'image
+ * analysée : flou de l'objectif, réduction de l'image, compression, et ombre portée de
+ * la pointe sur la toile. Mesuré sur 61 fléchettes réelles rejouées (exports de l'app,
+ * src/testing/export.test.ts) : sans correction 87 % de bons scores, 95 % à 2,75 px.
+ * Le réglage est en pixels et non en mm : l'origine est le flou de l'image, pas la
+ * géométrie de la cible (vérifié sur deux séquences à 0,70 et 1,16 mm par pixel).
+ */
+export const TIP = { blurPx: 2.75 };
 
 export interface DartEvent {
   kind: 'dart';
@@ -646,7 +653,7 @@ export class DartDetector {
     const ext = extendTip(tip.tip, tip.axis, absdM.data, absdM.cols, absdM.rows, Math.max(6, this.params.diffThreshold * 0.45), 60, 8);
     if (radius(ext.tip) <= RADII.doubleOuter + 40) tip.tip = ext.tip;
     // Le flou (5×5) étale le changement ≈ 1,5 px au-delà du vrai bout : on le retire.
-    tip.tip = { x: tip.tip.x + tip.axis.x * TIP_BLUR_PX, y: tip.tip.y + tip.axis.y * TIP_BLUR_PX };
+    tip.tip = { x: tip.tip.x + tip.axis.x * TIP.blurPx, y: tip.tip.y + tip.axis.y * TIP.blurPx };
     this.debug.contour = xy;
     this.debug.tip = tip;
 

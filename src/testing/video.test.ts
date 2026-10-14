@@ -117,7 +117,8 @@ run('vidéo réelle — superposition', () => {
 
 run('vidéo réelle — détection des fléchettes', () => {
   it.skipIf(!process.env.DETECT)('rejoue la vidéo', async () => {
-    const { DartDetector } = await import('../detector/detector');
+    const { DartDetector, TIP } = await import('../detector/detector');
+    if (process.env.TIP_BLUR) TIP.blurPx = Number(process.env.TIP_BLUR);
     const cv = await loadCvForTests();
     const meta = JSON.parse(readFileSync(join(dir!, 'meta.json'), 'utf8'));
     const calFrame = Number(process.env.CALIB_FRAME ?? 30);
@@ -130,6 +131,7 @@ run('vidéo réelle — détection des fléchettes', () => {
     }
     if (!sets.length) throw new Error('calibration impossible');
     const H0 = frameToBoard(medianPoints(sets), meta.width, meta.height);
+    console.log('échelle mm/px =', Math.sqrt(Math.abs(H0[0] * H0[4] - H0[1] * H0[3])).toFixed(3));
     let det = new DartDetector(cv, { frameToBoard: H0, width: meta.width, height: meta.height });
     console.log('caméra', JSON.stringify({ f: det.cam?.focal.toFixed(0), estimée: det.cam?.focalEstimated, normal: det.cam?.normalSign }));
     const dt = 1000 / meta.fps;
