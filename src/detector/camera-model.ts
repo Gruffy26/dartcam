@@ -111,6 +111,37 @@ export function outDirectionAtImage(cam: CameraModel, frameToBoard: Mat3, imgPt:
   return outDirection(cam, applyH(frameToBoard, imgPt), length);
 }
 
+/** Où se trouve la caméra par rapport à la cible, déduit de la calibration. */
+export interface CameraPose {
+  /** Angle horizontal par rapport à l'axe de la cible : négatif à gauche, positif à droite. */
+  azimuthDeg: number;
+  /** Angle vertical : positif au-dessus du centre de la cible. */
+  elevationDeg: number;
+  /** Distance de la caméra au centre de la cible (mm). */
+  distanceMm: number;
+}
+
+/**
+ * Position de la caméra dans le repère de la cible : centre optique C = −Rᵀ·t.
+ *
+ * Mesuré sur de vraies parties : de côté (25–30°) la détection est bonne, presque de
+ * face (moins de 10°) une fléchette sur deux est fausse ou manquée — vue dans l'axe,
+ * la fléchette pointe vers l'objectif et sa longueur à l'image se réduit à presque rien.
+ */
+export function cameraPose(cam: CameraModel): CameraPose {
+  const R = [cam.r1, cam.r2, cam.r3];
+  const C = [0, 1, 2].map((i) => -(R[0][i] * cam.t[0] + R[1][i] * cam.t[1] + R[2][i] * cam.t[2]));
+  const distanceMm = Math.hypot(C[0], C[1], C[2]) || 1;
+  return {
+    azimuthDeg: (Math.atan2(C[0], Math.abs(C[2])) * 180) / Math.PI,
+    elevationDeg: (Math.asin(C[1] / distanceMm) * 180) / Math.PI,
+    distanceMm,
+  };
+}
+
+/** En dessous de cet angle, la caméra est trop dans l'axe de la cible. */
+export const MIN_AZIMUTH_DEG = 18;
+
 /** Focale par défaut d'un iPhone (caméra principale, champ horizontal ≈ 70° en 16:9 paysage) pour une largeur donnée. */
 export function defaultFocalFor(width: number, height: number, zoom = 1): number {
   const longSide = Math.max(width, height);

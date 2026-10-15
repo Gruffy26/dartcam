@@ -2,7 +2,9 @@ import {
   boardOverlay,
   CALIB_TARGETS,
   calibrationMismatch,
+  cameraPlacement,
   loadCalibration,
+  placementAdvice,
   reprojectionError,
   saveCalibration,
   tryBoardToFrame,
@@ -180,11 +182,13 @@ export function calibrateScreen(nav: Nav): Screen {
           : 'Tu peux faire glisser un repère déjà posé pour le corriger.');
     } else {
       const e = error();
+      const a = aspect();
+      const place = a == null ? null : placementAdvice(cameraPlacement(points, REF_W, REF_W / a));
       stepText.textContent = method === 'auto' ? 'Cible détectée' : 'Vérifie le dessin jaune';
       hintText.textContent =
         (e == null ? '' : `Écart ${e.toFixed(1).replace('.', ',')} mm${e >= 5 ? ' — un repère semble mal placé' : ''} · `) +
-        'fais glisser un repère pour ajuster';
-      hintText.classList.toggle('warn', e != null && e >= 5);
+        (place ? place.text : 'fais glisser un repère pour ajuster');
+      hintText.classList.toggle('warn', (e != null && e >= 5) || !!place?.warn);
     }
     if (done) hintText.classList.toggle('warn', (error() ?? 0) >= 5);
     else hintText.classList.remove('warn');

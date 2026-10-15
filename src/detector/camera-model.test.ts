@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { boardPoint } from '../board';
 import { applyH } from '../homography';
 import { cameraHomography, type CameraPose } from '../testing/synthetic';
-import { cameraFromHomography, defaultFocalFor, outDirection, project } from './camera-model';
+import { cameraFromHomography, cameraPose, defaultFocalFor, outDirection, project } from './camera-model';
 
 const W = 640;
 const H = 1138;
@@ -14,6 +14,21 @@ describe('modèle de caméra', () => {
       const cam = cameraFromHomography(cameraHomography(pose(p)), W, H, 1234)!;
       expect(cam.focalEstimated).toBe(true);
       expect(cam.focal).toBeCloseTo(900, -1);
+    }
+  });
+
+  it('retrouve où est posée la caméra', () => {
+    for (const p of [
+      { yawDeg: -28, pitchDeg: -15, distance: 1600 },
+      { yawDeg: 30, pitchDeg: 10, distance: 800 },
+      { yawDeg: 9, pitchDeg: -11, distance: 1450 },
+    ]) {
+      const cam = cameraFromHomography(cameraHomography(pose(p)), W, H, 900)!;
+      const got = cameraPose(cam);
+      // L'azimut composé avec le tangage s'écarte de quelques dixièmes du lacet.
+      expect(Math.abs(got.azimuthDeg - p.yawDeg)).toBeLessThan(1.5);
+      expect(Math.abs(Math.abs(got.elevationDeg) - Math.abs(p.pitchDeg))).toBeLessThan(2.5);
+      expect(got.distanceMm).toBeCloseTo(p.distance, -2);
     }
   });
 

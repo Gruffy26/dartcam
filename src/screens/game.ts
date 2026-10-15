@@ -2,8 +2,10 @@ import { calibrationStillValid, detectBoard } from '../auto-run';
 import {
   boardOverlay,
   calibrationMismatch,
+  cameraPlacement,
   frameToBoard,
   loadCalibration,
+  placementAdvice,
   reprojectionError,
   saveCalibration,
   tryBoardToFrame,
@@ -137,7 +139,7 @@ export function gameScreen(nav: Nav): Screen {
         method: 'auto',
       });
       saveCalibration(cal!);
-      setStatus('Cible trouvée. Ne touche plus le téléphone…', 'wait');
+      warnPlacement(res.points, f);
       return;
     }
     // Échec : la calibration précédente est-elle toujours bonne (trépied pas bougé) ?
@@ -146,11 +148,22 @@ export function gameScreen(nav: Nav): Screen {
       if (await calibrationStillValid(cam, saved)) {
         if (disposed || id !== run) return;
         useCalibration(saved);
-        setStatus('Cible trouvée. Ne touche plus le téléphone…', 'wait');
+        warnPlacement(saved.points, f);
         return;
       }
     }
     setStatus('Cible non trouvée : vérifie le cadrage et la lumière (menu › Redétecter)', 'alert');
+  }
+
+  /**
+   * La détection n'est bonne que si la caméra est nettement sur le côté : dans l'axe de
+   * la cible, la fléchette pointe vers l'objectif et sa longueur à l'image s'écrase.
+   */
+  function warnPlacement(points: Pt[], f: FrameInfo | null) {
+    const a = f ? f.crop.w / f.crop.h : null;
+    const place = a ? placementAdvice(cameraPlacement(points, 1000, 1000 / a)) : null;
+    if (place?.warn) setStatus(place.text, 'alert');
+    else setStatus('Cible trouvée. Ne touche plus le téléphone…', 'wait');
   }
 
   function useCalibration(c: Calibration) {

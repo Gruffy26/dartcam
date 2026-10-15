@@ -5,6 +5,7 @@ import {
   CALIB_TARGETS,
   calibrationMismatch,
   frameToBoard,
+  placementAdvice,
   reprojectionError,
   tryBoardToFrame,
   type Calibration,
@@ -75,5 +76,21 @@ describe('calibration', () => {
     expect(calibrationMismatch(cal, { zoom: 2, aspect: W / H })).toMatch(/zoom/);
     expect(calibrationMismatch(cal, { zoom: 1.5, aspect: H / W })).toMatch(/orientation/);
     expect(calibrationMismatch({ ...cal, kind: 'video' }, { zoom: 1, aspect: W / H })).toBeNull();
+  });
+});
+
+describe('position de la caméra', () => {
+  const pose = (azimuthDeg: number) => ({ azimuthDeg, elevationDeg: 15, distanceMm: 1200 });
+
+  it('prévient quand la caméra est trop dans l’axe', () => {
+    const a = placementAdvice(pose(9));
+    expect(a?.warn).toBe(true);
+    expect(a?.text).toContain('axe');
+  });
+
+  it('indique le côté et la distance quand la position est bonne', () => {
+    expect(placementAdvice(pose(-28))).toEqual({ text: 'Caméra à gauche, 28° · ≈ 1,2 m', warn: false });
+    expect(placementAdvice(pose(30))?.text).toContain('à droite');
+    expect(placementAdvice(null)).toBe(null);
   });
 });

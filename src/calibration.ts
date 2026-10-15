@@ -5,6 +5,7 @@
 // la taille d'affichage et de la résolution d'analyse.
 
 import { boardPoint, RADII, SECTORS, sectorCenterAngle, SECTOR_ANGLE } from './board';
+import { cameraFromHomography, cameraPose, defaultFocalFor, MIN_AZIMUTH_DEG, type CameraPose } from './detector/camera-model';
 import { applyH, computeHomography, invertH, type Mat3, type Pt } from './homography';
 import { loadJSON, removeKey, saveJSON } from './storage';
 
@@ -138,4 +139,32 @@ export function medianPoints(sets: Pt[][]): Pt[] {
     return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
   };
   return sets[0].map((_, i) => ({ x: med(sets.map((p) => p[i].x)), y: med(sets.map((p) => p[i].y)) }));
+}
+
+/**
+ * Où est posée la caméra par rapport à la cible, d'après les repères de calibration.
+ * Sert à prévenir l'utilisateur quand le trépied est trop dans l'axe de la cible.
+ */
+export function cameraPlacement(points: Pt[], W: number, H: number): CameraPose | null {
+  if (points.length < CALIB_TARGETS.length) return null;
+  try {
+    const B2I = tryBoardToFrame(points, W, H);
+    if (!B2I) return null;
+    const cam = cameraFromHomography(B2I, W, H, defaultFocalFor(W, H));
+    return cam ? cameraPose(cam) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Phrase courte décrivant la position de la caméra, et si elle gêne la détection. */
+export function placementAdvice(pose: CameraPose | null): { text: string; warn: boolean } | null {
+  if (!pose) return null;
+  const az = Math.abs(pose.azimuthDeg);
+  const side = pose.azimuthDeg < 0 ? 'à gauche' : 'à droite';
+  const dist = `≈ ${(pose.distanceMm / 1000).toFixed(1).replace('.', ',')} m`;
+  if (az < MIN_AZIMUTH_DEG) {
+    return { text: `Caméra presque dans l’axe de la cible (${az.toFixed(0)}°) : décale le trépied sur le côté`, warn: true };
+  }
+  return { text: `Caméra ${side}, ${az.toFixed(0)}° · ${dist}`, warn: false };
 }
