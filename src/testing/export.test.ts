@@ -67,6 +67,7 @@ run('exports de l’app', () => {
       for (let k = 1; k < list.length; k++) {
         const prev = list[k - 1];
         const cur = list[k];
+        if (cur.index === 0) continue; // image de référence d'avant la volée
         if (cur.origin !== 'auto' && !process.env.MANUAL) continue; // ajoutée à la main
         if (cur.origin === 'miss') continue;
         const ref = readBmp(bmpOf(prev));
@@ -258,10 +259,10 @@ run('exports de l’app — position de la caméra', () => {
       const d = Math.hypot(C[0], C[1], C[2]);
       const az = (Math.atan2(C[0], Math.abs(C[2])) * 180) / Math.PI; // + = à droite de la cible
       const el = (Math.asin(C[1] / d) * 180) / Math.PI; // + = au-dessus du centre
-      const auto = list.filter((x) => x.origin === 'auto');
+      const auto = list.filter((x) => x.origin === 'auto' && x.index > 0);
       const wrong = auto.filter((x) => x.corrected && x.autoScore !== x.score).length;
       const miss = list.filter((x) => x.origin === 'manual').length;
-      seen.set(v, { az, el, d, err: wrong, miss, n: list.length });
+      seen.set(v, { az, el, d, err: wrong, miss, n: list.filter((x) => x.index > 0).length });
     }
     const buckets = new Map<string, { n: number; err: number; miss: number }>();
     for (const [v, s] of [...seen].sort()) {

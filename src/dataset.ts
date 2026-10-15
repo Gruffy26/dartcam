@@ -107,11 +107,38 @@ export async function addVolley(
   params: DetectorParams,
   build: string,
   note = '',
+  /** Image de la cible avant la volée : référence pour rejouer la première fléchette. */
+  start: ShotInfo | null = null,
 ): Promise<void> {
   const db = await openDb();
   if (!db) return;
   const volley = new Date().toISOString().replace(/[:.]/g, '-');
   try {
+    if (start) {
+      const jpeg = await encode(start.img);
+      const meta: SampleMeta = {
+        at: new Date().toISOString(),
+        build,
+        volley,
+        index: 0,
+        frame: { w: start.img.width, h: start.img.height },
+        f2b: start.f2b,
+        calib: cal ? { points: cal.points, zoom: cal.zoom, aspect: cal.aspect, method: cal.method ?? 'auto', errMm } : null,
+        tip: null,
+        board: null,
+        autoScore: null,
+        score: '',
+        points: 0,
+        origin: 'auto',
+        corrected: false,
+        uncertain: false,
+        note: 'debut',
+        params,
+        image: jpeg ? `${volley}-0.jpg` : null,
+      };
+      const tx = db.transaction(STORE, 'readwrite');
+      await done(tx.objectStore(STORE).add({ meta, jpeg } as StoredSample));
+    }
     for (let i = 0; i < darts.length; i++) {
       const d = darts[i];
       const shot = shots.get(d.id) ?? null;

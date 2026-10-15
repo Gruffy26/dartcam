@@ -50,6 +50,8 @@ export function gameScreen(nav: Nav): Screen {
   volley.darts = saved.pending ?? [];
   /** Image analysée et calibration au moment de chaque fléchette (pour la corriger de face). */
   const shots = new Map<number, { img: ImageData; f2b: Mat3 }>();
+  /** Cible avant la première fléchette de la volée (enregistrement seulement). */
+  let startShot: { img: ImageData; f2b: Mat3 } | null = null;
   let announced = '';
 
   const cam = createCameraStage(nav, { chrome: false });
@@ -274,7 +276,7 @@ export function gameScreen(nav: Nav): Screen {
   function capture(darts: DartRecord[], note = '') {
     if (!getSettings().collect || !darts.length) return;
     const err = cal && detSize.w ? reprojectionError(cal.points, detSize.w, detSize.h) : 0;
-    void addVolley(darts, new Map(shots), cal, err, getSettings().detector, __BUILD_ID__, note);
+    void addVolley(darts, new Map(shots), cal, err, getSettings().detector, __BUILD_ID__, note, note ? null : startShot);
   }
 
   function cleared(manual: boolean) {
@@ -570,6 +572,9 @@ export function gameScreen(nav: Nav): Screen {
         setStatus(`Prêt — à ${playerName(game.current)} de lancer`, 'ready');
       }
     }
+    // Après les événements : la dernière image d'avant la première fléchette de la volée.
+    // Sans elle, la première fléchette n'est pas rejouable dans les enregistrements.
+    if (!volley.darts.length && detector) startShot = { img, f2b: detector.frameToBoard };
     if (debugMode) updateDebug();
 
     frames++;
