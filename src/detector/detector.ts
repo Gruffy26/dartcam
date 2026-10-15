@@ -13,13 +13,13 @@
 // Chaque Mat OpenCV est libérée (`delete`) : les fuites font planter Safari sur iPhone.
 
 import type { RgbaImage } from '../autocalib';
-import { boardPoint, distanceToWire, RADII, scoreFromBoardCoords, type Score } from '../board';
+import { boardPoint, RADII, scoreFromBoardCoords, type Score } from '../board';
 import { applyH, invertH, type Mat3, type Pt } from '../homography';
 import type { CV } from '../opencv';
 import { estimateShift, makeAnchor, type Anchor } from './align';
 import { cameraFromHomography, defaultFocalFor, outDirection, project, type CameraModel } from './camera-model';
 import { DEFAULT_PARAMS, type DetectorParams } from './params';
-import { extendTip, findTip, locateDart, mergeAlongAxis, type TipResult } from './tip';
+import { extendTip, findTip, locateDart, mergeAlongAxis, scoreFragile, type TipResult } from './tip';
 
 /**
  * Débordement du changement au-delà du vrai bout de la fléchette, en pixels de l'image
@@ -29,7 +29,7 @@ import { extendTip, findTip, locateDart, mergeAlongAxis, type TipResult } from '
  * Le réglage est en pixels et non en mm : l'origine est le flou de l'image, pas la
  * géométrie de la cible (vérifié sur deux séquences à 0,70 et 1,16 mm par pixel).
  */
-export const TIP = { blurPx: 2.75 };
+export const TIP = { blurPx: 2.75, doubtMm: 2 };
 
 export interface DartEvent {
   kind: 'dart';
@@ -660,6 +660,7 @@ export class DartDetector {
     const board = applyH(F2B, tip.tip);
     // Pointe hors de la cible (au-delà du tour de chiffres) : pas une fléchette plantée.
     if (Math.hypot(board.x, board.y) > 228) return { used, area, reason: 'no-tip' };
+    const score = scoreFromBoardCoords(board.x, board.y);
     return {
       used,
       area,
@@ -668,10 +669,10 @@ export class DartDetector {
         tip: tip.tip,
         tail: tip.tail,
         board,
-        score: scoreFromBoardCoords(board.x, board.y),
+        score,
         area,
         confidence: tip.confidence,
-        uncertain: distanceToWire(board.x, board.y) < 2,
+        uncertain: scoreFragile(F2B, tip.tip, tip.axis, score.libelle, TIP.doubtMm),
       },
     };
   }

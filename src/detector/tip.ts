@@ -9,7 +9,8 @@
 //    - la pointe est sur la cible (ou tout près), l'empennage souvent hors de la cible.
 // 4. Position précise : sur l'axe central, au bout côté pointe.
 
-import type { Pt } from '../homography';
+import { scoreFromBoardCoords } from '../board';
+import { applyH, type Mat3, type Pt } from '../homography';
 
 export interface TipInput {
   /** Pixels de la silhouette (x, y alternés). */
@@ -373,4 +374,21 @@ export function locateDart(xy: ArrayLike<number>, outDir: Pt, maxAngleDeg = 35):
     confidence: Math.min(1, (inl.length / 2 / n) * 2) * align,
     votes: { direction: 2 * align, width: 0, board: 0 },
   };
+}
+
+/**
+ * Le score tient-il à un cheveu ? On glisse la pointe de ±`mm` le long de l'axe de la
+ * fléchette — la direction dans laquelle l'imprécision se joue — et on regarde si le
+ * score change. Mesuré sur 261 fléchettes réelles : la distance au fil le plus proche
+ * ne prévoyait aucune des erreurs, parce qu'une pointe mal placée paraît justement
+ * bien au milieu d'une case.
+ */
+export function scoreFragile(F2B: Mat3, tip: Pt, axis: Pt, libelle: string, mm: number): boolean {
+  const scale = Math.sqrt(Math.abs(F2B[0] * F2B[4] - F2B[1] * F2B[3])) || 1;
+  const d = mm / scale;
+  for (const k of [-d, d]) {
+    const p = applyH(F2B, { x: tip.x + axis.x * k, y: tip.y + axis.y * k });
+    if (scoreFromBoardCoords(p.x, p.y).libelle !== libelle) return true;
+  }
+  return false;
 }

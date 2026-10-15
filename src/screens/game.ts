@@ -245,7 +245,7 @@ export function gameScreen(nav: Nav): Screen {
     rec.uncertain = ev.uncertain;
     if (detector) shots.set(rec.id, { img, f2b: detector.frameToBoard });
     lastPopped = rec.id;
-    if (!turnOver()) setStatus(ev.uncertain ? `${ev.score.libelle} — près d’un fil, vérifie` : `${ev.score.libelle} (${ev.score.points})`, ev.uncertain ? 'alert' : 'ready');
+    if (!turnOver()) setStatus(ev.uncertain ? `${ev.score.libelle} — score limite, vérifie` : `${ev.score.libelle} (${ev.score.points})`, ev.uncertain ? 'alert' : 'ready');
     afterChange();
   }
 

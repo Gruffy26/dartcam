@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { findTip } from './tip';
+import type { Mat3 } from '../homography';
+import { findTip, scoreFragile} from './tip';
 
 /** Silhouette d'une fléchette : fût fin de la pointe (tip) sur `len` px, puis empennage large. */
 function dartBlob(tip: { x: number; y: number }, angleDeg: number, len = 120, flight = 26) {
@@ -68,5 +69,29 @@ describe('morceaux et prolongement', () => {
     for (let x = 60; x <= 100; x++) diff[50 * W + x] = 15; // trace faible de 60 à 100
     const r = extendTip({ x: 100, y: 50 }, { x: 1, y: 0 }, diff, W, 100, 10);
     expect(r.tip.x).toBe(60);
+  });
+});
+
+describe('score fragile', () => {
+  // Cadre fictif : 1 px = 1 mm, y de l'image vers le bas.
+  const F2B: Mat3 = [1, 0, -320, 0, -1, 320, 0, 0, 1];
+  const up = { x: 0, y: -1 };
+
+  it('marque une pointe juste au bord du triple', () => {
+    // RADII.tripleOuter = 107 mm : à 106 mm, +2 mm fait sortir du triple.
+    const tip = { x: 320, y: 320 - 106 };
+    expect(scoreFragile(F2B, tip, up, 'T20', 2)).toBe(true);
+  });
+
+  it('ne marque pas une pointe bien au milieu de sa case', () => {
+    const tip = { x: 320, y: 320 - 130 };
+    expect(scoreFragile(F2B, tip, up, '20', 2)).toBe(false);
+  });
+
+  it('ne regarde que l’axe de la fléchette, pas les fils de côté', () => {
+    // Juste à côté du fil entre le 20 et le 1, mais l'axe est radial : le score tient.
+    const a = ((9 - 0.3) * Math.PI) / 180;
+    const tip = { x: 320 + 130 * Math.sin(a), y: 320 - 130 * Math.cos(a) };
+    expect(scoreFragile(F2B, tip, { x: Math.sin(a), y: -Math.cos(a) }, '20', 2)).toBe(false);
   });
 });

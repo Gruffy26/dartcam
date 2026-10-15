@@ -54,9 +54,13 @@ run('exports de l’app', () => {
     const scaleOf = (H: Mat3) => Math.sqrt(Math.abs(H[0] * H[4] - H[1] * H[3]));
     for (const blur of sweep.length ? sweep : [TIP.blurPx]) {
     TIP.blurPx = blur;
+    if (process.env.DOUBT) TIP.doubtMm = Number(process.env.DOUBT);
     let tested = 0;
     let found = 0;
     let right = 0;
+    let flagged = 0;
+    let flaggedWrong = 0;
+    let missedWrong = 0;
     const far: string[] = [];
     for (const [, list] of volleys) {
       list.sort((a, b) => a.index - b.index);
@@ -104,8 +108,11 @@ run('exports de l’app', () => {
         }
         found++;
         const got = e.score.libelle;
+        if (e.uncertain) flagged++;
         if (got === truth) right++;
         else {
+          if (e.uncertain) flaggedWrong++;
+          else missedWrong++;
           const d = cur.tip ? Math.hypot(e.tip.x - cur.tip.x, e.tip.y - cur.tip.y) : NaN;
           const mm = cur.board ? Math.hypot(e.board.x - cur.board.x, e.board.y - cur.board.y) : NaN;
           far.push(
@@ -116,6 +123,7 @@ run('exports de l’app', () => {
       }
     }
     console.log(`\ndécalage pointe ${blur} ${inMm ? 'mm' : 'px'} — rejouées ${tested}, détectées ${found}, bon score ${right} (${((100 * right) / tested).toFixed(0)}%)`);
+    console.log(`  marquées « ? » : ${flagged} (${flaggedWrong} vraiment fausses, ${missedWrong} fausses non marquées)`);
     if (!process.env.QUIET) for (const line of far) console.log('  ' + line);
     }
     void applyH;
