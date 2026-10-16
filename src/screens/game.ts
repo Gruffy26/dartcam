@@ -52,6 +52,8 @@ export function gameScreen(nav: Nav): Screen {
   const shots = new Map<number, { img: ImageData; f2b: Mat3 }>();
   /** Cible avant la première fléchette de la volée (enregistrement seulement). */
   let startShot: { img: ImageData; f2b: Mat3 } | null = null;
+  /** Il faut (re)prendre cette image de référence : début de partie ou fléchettes retirées. */
+  let wantStart = true;
   let announced = '';
 
   const cam = createCameraStage(nav, { chrome: false });
@@ -301,6 +303,7 @@ export function gameScreen(nav: Nav): Screen {
     volley = new Volley();
     shots.clear();
     announced = '';
+    wantStart = true;
     if (manual) detector?.resetReference();
     else detector?.setMode('throwing');
     afterChange();
@@ -559,6 +562,7 @@ export function gameScreen(nav: Nav): Screen {
     for (const ev of events) {
       if (ev.kind === 'dart') onDart(ev, img);
       else if (ev.kind === 'cleared' && game.winner == null) {
+        wantStart = true;
         if (editing) clearPending = true;
         else cleared(false);
       }
@@ -572,9 +576,13 @@ export function gameScreen(nav: Nav): Screen {
         setStatus(`Prêt — à ${playerName(game.current)} de lancer`, 'ready');
       }
     }
-    // Après les événements : la dernière image d'avant la première fléchette de la volée.
-    // Sans elle, la première fléchette n'est pas rejouable dans les enregistrements.
-    if (!volley.darts.length && detector) startShot = { img, f2b: detector.frameToBoard };
+    // Image de la cible vide au début de la volée : référence pour rejouer la première
+    // fléchette dans les enregistrements. Prise une seule fois, sur une image stable,
+    // sinon une fléchette déjà plantée mais pas encore confirmée s'y glisserait.
+    if (wantStart && !volley.darts.length && detector?.settled) {
+      startShot = { img, f2b: detector.frameToBoard };
+      wantStart = false;
+    }
     if (debugMode) updateDebug();
 
     frames++;

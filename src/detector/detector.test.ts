@@ -54,7 +54,18 @@ describe('détecteur sur une vidéo de synthèse', () => {
       for (let k = 0; k < count; k++, t += 100) events.push(...det.process(frame(n, [0, 1, -1][k % 3]), t));
     };
     play(0, 16);
-    play(1, 10);
+    // `settled` protège l'image de référence enregistrée : dès que la fléchette arrive,
+    // et tant qu'elle n'est pas confirmée, la cible ne doit plus être considérée comme
+    // « telle qu'elle est ».
+    expect(det.settled).toBe(true);
+    const settledBeforeDart: boolean[] = [];
+    for (let k = 0; k < 10; k++, t += 100) {
+      const evs = det.process(frame(1, [0, 1, -1][k % 3]), t);
+      events.push(...evs);
+      if (!evs.some((e) => e.kind === 'dart')) settledBeforeDart.push(det.settled);
+    }
+    // Entre l'arrivée de la fléchette et sa confirmation, la cible n'est jamais « posée ».
+    expect(settledBeforeDart.slice(0, 3)).toEqual([false, false, false]);
     play(2, 10);
     play(3, 10);
     expect(events.filter((e) => e.kind === 'reference')).toHaveLength(1);

@@ -433,6 +433,15 @@ export class DartDetector {
     return res;
   }
 
+  /**
+   * Référence posée et aucun mouvement en attente d'analyse : l'image en cours montre
+   * la cible telle qu'elle est vraiment (et non une fléchette qui vient d'arriver mais
+   * n'est pas encore confirmée).
+   */
+  get settled(): boolean {
+    return this.ref != null && !this.sawMotion && !this.shifted;
+  }
+
   process(img: RgbaImage, t: number): DetectorEvent[] {
     const t0 = performance.now();
     const events: DetectorEvent[] = [];
