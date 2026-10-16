@@ -84,6 +84,10 @@ export function gameScreen(nav: Nav): Screen {
   let lastFpsT = performance.now();
   let lastPopped = -1;
   let sheet: SheetHandle | null = null;
+  /** Volée précédente gardée telle quelle, pour pouvoir y revenir après coup. */
+  let previous: { darts: DartRecord[]; shots: Map<number, { img: ImageData; f2b: Mat3 }>; player: number } | null = null;
+  /** On corrige la volée précédente : rien ne s'enregistre tant qu'elle n'est pas validée. */
+  let reviewing = false;
   /** Une fléchette est en cours de correction : le retrait automatique attend. */
   let editing = false;
   let clearPending = false;
@@ -100,7 +104,8 @@ export function gameScreen(nav: Nav): Screen {
   const scores = h('section', { class: 'scores' });
   const dartsRow = h('div', { class: 'darts' });
   const status = h('div', { class: 'status' }, h('span'));
-  const volleySec = h('section', { class: 'volley-sec' }, dartsRow, status);
+  const prevChip = h('button', { class: 'prev-chip hidden', onclick: () => reviewPrevious() }, icon('undo', 16), h('span'));
+  const volleySec = h('section', { class: 'volley-sec' }, prevChip, dartsRow, status);
 
   const overlay = h('canvas', { class: 'overlay interactive' });
   const expandBtn = h('button', { class: 'cam-expand', 'aria-label': 'Agrandir la caméra', onclick: () => toggleExpand() }, icon('expand'));
@@ -243,11 +248,12 @@ export function gameScreen(nav: Nav): Screen {
     if (turnOver()) {
       detector?.setMode('removal');
       const name = playerName(game.current);
-      if (ev.finished) setStatus(`${name} finit ! Retire tes fléchettes pour valider`, 'ready');
+      if (reviewing) setStatus(`Volée précédente : ${ev.scored} — corrige puis « Valider »`, 'alert');
+      else if (ev.finished) setStatus(`${name} finit ! Retire tes fléchettes pour valider`, 'ready');
       else if (ev.bust) setStatus(`Bust : ${name} reste à ${ev.remaining}. Va retirer tes fléchettes`, 'alert');
       else setStatus(`Volée de ${ev.scored}. Va retirer tes fléchettes`, 'wait');
       // Annonce vocale (une seule fois, sauf si une correction change le résultat).
-      const key = `${ev.bust}:${ev.finished}:${ev.scored}`;
+      const key = `${reviewing}:${ev.bust}:${ev.finished}:${ev.scored}`;
       if (key !== announced) {
         announced = key;
         speak(ev.finished ? `Partie gagnée par ${name} !` : ev.bust ? 'Bust !' : String(ev.scored));
@@ -292,6 +298,31 @@ export function gameScreen(nav: Nav): Screen {
     afterChange();
   }
 
+  /**
+   * Revenir sur la volée précédente : elle est ressortie telle qu'elle a été comptée,
+   * avec ses images, pour corriger une fléchette. Rien ne s'enregistre avant « Valider ».
+   */
+  function reviewPrevious() {
+    const last = game.turns[game.turns.length - 1];
+    if (reviewing || !last || game.winner != null) return;
+    sheet?.close();
+    game = undoTurn(game);
+    volley = new Volley();
+    shots.clear();
+    if (previous) {
+      volley.darts = previous.darts;
+      for (const [id, shot] of previous.shots) shots.set(id, shot);
+    } else {
+      // Partie rouverte depuis la sauvegarde : on n'a plus que les scores comptés.
+      for (const sc of last.darts) volley.addManual(sc, null, null);
+    }
+    reviewing = true;
+    announced = '';
+    detector?.setMode('removal');
+    afterChange();
+    setStatus('Volée précédente : touche une fléchette pour la corriger, puis « Valider »', 'alert');
+  }
+
   /** Fléchettes retirées (automatiquement ou au bouton) : la volée est enregistrée. */
   /** Garde les fléchettes de la volée pour améliorer la détection (si l'option est active). */
   function capture(darts: DartRecord[], note = '') {
@@ -303,9 +334,11 @@ export function gameScreen(nav: Nav): Screen {
   }
 
   function cleared(manual: boolean) {
+    reviewing = false;
     if (volley.darts.length && game.winner == null) {
       capture(volley.darts);
       const before = game.current;
+      previous = { darts: volley.darts, shots: new Map(shots), player: before };
       game = commitTurn(game, volley.darts.map((d) => d.score));
       const last = game.turns[game.turns.length - 1];
       volley = new Volley();
@@ -332,6 +365,15 @@ export function gameScreen(nav: Nav): Screen {
 
   // --- Affichage ------------------------------------------------------------
   function render() {
+    // Bouton « Retirées » / « Valider », et accès à la volée précédente.
+    clearBtn.replaceChildren(icon(reviewing ? 'check' : 'hand', 20), document.createTextNode(reviewing ? 'Valider' : 'Retirées'));
+    const canReview = !reviewing && game.winner == null && !!game.turns.length && !volley.darts.length;
+    prevChip.classList.toggle('hidden', !canReview);
+    if (canReview) {
+      const last = game.turns[game.turns.length - 1];
+      const pts = last.bust ? 'bust' : `${last.before - last.after}`;
+      prevChip.querySelector('span')!.textContent = `Volée précédente : ${pts} — corriger`;
+    }
     const ev = turnEval();
     const rem = remaining();
     const st = playerStats(game);
@@ -480,14 +522,7 @@ export function gameScreen(nav: Nav): Screen {
           item('Agrandir la caméra', 'expand', () => toggleExpand(true)),
           item('Redétecter la cible', 'refresh', () => void findBoard()),
           item('Ajuster la cible à la main', 'target', () => nav('calibrate')),
-          item('Annuler la volée précédente', 'undo', () => {
-            if (!game.turns.length) return;
-            game = undoTurn(game);
-            volley = new Volley();
-            shots.clear();
-            setStatus(`Volée précédente annulée : ${playerName(game.current)} rejoue`, 'info');
-            afterChange();
-          }),
+          item('Corriger la volée précédente', 'undo', () => reviewPrevious()),
           item('Abandonner la partie', 'flag', () => (clearGame(), nav('home')), 'danger'),
         ),
       ],
@@ -619,6 +654,8 @@ export function gameScreen(nav: Nav): Screen {
       if (ev.kind === 'dart') onDart(ev, img);
       else if (ev.kind === 'cleared' && game.winner == null) {
         wantStart = true;
+        // Volée précédente en cours de correction : elle attend d'être validée.
+        if (reviewing) continue;
         if (editing) clearPending = true;
         else cleared(false);
       }

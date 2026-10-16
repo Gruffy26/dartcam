@@ -193,22 +193,182 @@ input { font: inherit; color: inherit; }
 .slider input { width: 100%; height: 28px; accent-color: var(--accent); }
 
 /* --- Accueil ------------------------------------------------------------- */
-.home-hero { display: grid; justify-items: center; gap: 10px; padding: 28px 0 8px; }
-.home-hero img { width: 96px; height: 96px; border-radius: 24px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4); }
-.home-hero h1 { margin: 0; font-size: 2.2rem; font-weight: 800; letter-spacing: -0.02em; }
-.home-hero p { margin: 0; color: var(--muted); text-align: center; }
-.resume-card {
+/* --- Accueil -------------------------------------------------------------
+   Bandeau en dégradé avec une cible en filigrane, action principale pleine
+   largeur, puis une grille de raccourcis. Tout reste lisible à 2–3 m. */
+.page.home { gap: 14px; }
+
+.hero {
+  position: relative;
+  margin-top: 4px;
+  overflow: hidden;
   display: grid;
-  gap: 4px;
+  justify-items: start;
+  gap: 2px;
+  padding: 26px 22px 24px;
+  border-radius: 28px;
+  background: linear-gradient(145deg, #1a2430 0%, #141a21 55%, #12161c 100%);
+  border: 1px solid var(--line);
+  isolation: isolate;
+}
+.hero::after {
+  /* liseré clair en haut : donne du relief sans ombre lourde */
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+}
+.hero-glow {
+  position: absolute;
+  z-index: -1;
+  inset: -40% -30% auto -30%;
+  height: 170%;
+  background:
+    radial-gradient(42% 46% at 22% 18%, rgba(47, 191, 143, 0.5), transparent 70%),
+    radial-gradient(38% 42% at 88% 12%, rgba(124, 200, 255, 0.35), transparent 70%),
+    radial-gradient(45% 50% at 70% 92%, rgba(255, 213, 74, 0.22), transparent 70%);
+  filter: blur(6px);
+  animation: aurora 18s var(--ease) infinite alternate;
+}
+@keyframes aurora {
+  from { transform: translate3d(-4%, -2%, 0) scale(1); }
+  to { transform: translate3d(5%, 3%, 0) scale(1.12); }
+}
+.hero-board {
+  position: absolute;
+  z-index: -1;
+  right: -54px;
+  top: 50%;
+  translate: 0 -50%;
+  width: 230px;
+  height: 230px;
+  color: rgba(255, 255, 255, 0.09);
+  mask-image: radial-gradient(circle at 50% 50%, #000 55%, transparent 76%);
+}
+.hero .eyebrow {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.hero h1 { margin: 2px 0 0; font-size: 2.6rem; line-height: 1.05; font-weight: 800; letter-spacing: -0.03em; }
+.hero p { margin: 8px 0 0; max-width: 26ch; color: #c3cad4; font-size: 1rem; line-height: 1.35; }
+
+/* Action principale */
+.cta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
   width: 100%;
   padding: 16px 18px;
-  border-radius: var(--radius-lg);
-  background: var(--accent);
-  color: var(--accent-ink);
+  border-radius: 22px;
   text-align: left;
+  color: var(--accent-ink);
+  background: linear-gradient(135deg, #46d7a5, #2fbf8f 55%, #22a98c);
+  box-shadow: 0 14px 34px -16px rgba(47, 191, 143, 0.9);
 }
-.resume-card b { font-size: 1.2rem; }
-.resume-card span { font-size: 0.95rem; opacity: 0.85; }
+.cta:active { transform: scale(0.985); }
+.cta-ic {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 16px;
+  background: rgba(4, 36, 26, 0.18);
+}
+.cta-text { display: grid; gap: 1px; flex: 1; min-width: 0; }
+.cta-text b { font-size: 1.22rem; font-weight: 800; letter-spacing: -0.01em; }
+.cta-text small { font-size: 0.86rem; opacity: 0.78; }
+.cta-go { flex: none; rotate: 180deg; opacity: 0.6; }
+.cta.second {
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+.cta.second .cta-ic { background: var(--surface-3); color: var(--accent); }
+
+/* Partie en cours */
+.resume {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  padding: 16px 18px;
+  border-radius: 22px;
+  text-align: left;
+  color: var(--text);
+  background: linear-gradient(135deg, rgba(47, 191, 143, 0.16), rgba(124, 200, 255, 0.1));
+  border: 1px solid rgba(47, 191, 143, 0.35);
+}
+.resume-top { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); }
+.resume .live { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.8s var(--ease) infinite; }
+@keyframes pulse { 50% { opacity: 0.25; transform: scale(0.8); } }
+.resume-scores { display: flex; flex-wrap: wrap; gap: 8px 28px; }
+.resume-player { display: grid; }
+.resume-player em { font-style: normal; font-size: 1.9rem; font-weight: 800; letter-spacing: -0.02em; }
+.resume-player small { color: var(--muted); font-size: 0.85rem; }
+.resume-go { display: flex; align-items: center; gap: 4px; font-weight: 700; color: var(--accent); }
+.resume-go svg { rotate: 180deg; }
+
+/* Raccourcis */
+.bento { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.tile {
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  padding: 16px;
+  border-radius: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  text-align: left;
+  min-height: 118px;
+  align-content: start;
+}
+.tile.wide { grid-column: 1 / -1; min-height: 0; }
+.tile:active { background: var(--surface-2); }
+.tile-ic {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 8px;
+  border-radius: 13px;
+  background: var(--surface-3);
+  color: var(--accent);
+}
+.tile b { font-size: 1rem; font-weight: 700; }
+.tile small { color: var(--muted); font-size: 0.84rem; }
+
+.status-pill {
+  margin-top: auto;
+  padding: 10px 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 0.86rem;
+  color: var(--faint);
+  text-align: center;
+}
+.status-pill i { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+
+/* Arrivée en douceur */
+.page.home > * { animation: rise 0.42s var(--ease) both; }
+.page.home > *:nth-child(2) { animation-delay: 0.05s; }
+.page.home > *:nth-child(3) { animation-delay: 0.1s; }
+.page.home > *:nth-child(4) { animation-delay: 0.15s; }
+.page.home > *:nth-child(5) { animation-delay: 0.2s; }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-glow, .resume .live { animation: none; }
+  .page.home > * { animation: none; }
+}
+
 .status-line { display: flex; align-items: center; gap: 8px; justify-content: center; font-size: 0.9rem; color: var(--muted); text-align: center; }
 
 /* --- Préparation de partie ---------------------------------------------- */
@@ -506,6 +666,22 @@ input { font: inherit; color: inherit; }
   font-variant-numeric: tabular-nums;
 }
 .volley-total.bust { color: var(--danger); font-size: 1.1rem; }
+.prev-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  margin: 0 auto 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+.prev-chip:active { background: var(--surface-3); }
+
 .status {
   display: flex;
   align-items: center;
