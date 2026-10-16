@@ -5,6 +5,7 @@ import { remainingScores } from '../game/x01';
 import { icon } from '../icons';
 import type { Nav } from '../main';
 import { getSettings } from '../settings';
+import { loadJSON, saveJSON } from '../storage';
 
 /** Cible stylisée en fond du bandeau : anneaux et secteurs, très discrets. */
 function boardMotif(): SVGElement {
@@ -33,6 +34,52 @@ function boardMotif(): SVGElement {
     });
   }
   return svg;
+}
+
+/** L'app tourne-t-elle depuis l'écran d'accueil (plein écran) plutôt que dans Safari ? */
+function installed(): boolean {
+  try {
+    return (
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (navigator as unknown as { standalone?: boolean }).standalone === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+const INSTALL_KEY = 'dartcam.installHidden';
+
+/** Marche à suivre sur iPhone : il n'y a pas de bouton « installer » dans Safari. */
+function installCard(): HTMLElement | null {
+  if (installed() || loadJSON<boolean>(INSTALL_KEY, false)) return null;
+  const card = h(
+    'section',
+    { class: 'install' },
+    h(
+      'button',
+      {
+        class: 'install-close',
+        'aria-label': 'Masquer',
+        onclick: () => {
+          saveJSON(INSTALL_KEY, true);
+          card.remove();
+        },
+      },
+      icon('close', 18),
+    ),
+    h('b', {}, 'Installe DartCam sur ton écran d’accueil'),
+    h('p', {}, 'Elle s’ouvre alors en plein écran, sans la barre d’adresse, et fonctionne sans réseau.'),
+    h(
+      'ol',
+      {},
+      h('li', {}, 'Touche ', h('span', { class: 'ikey' }, icon('share', 16)), ' en bas de Safari'),
+      h('li', {}, 'Choisis ', h('span', { class: 'ikey' }, icon('plus_square', 16), 'Sur l’écran d’accueil')),
+      h('li', {}, 'Puis ', h('b', {}, 'Ajouter'), ' en haut à droite'),
+    ),
+    h('small', {}, 'L’app installée garde ses propres réglages : commence par vérifier la cible.'),
+  );
+  return card;
 }
 
 export function homeScreen(nav: Nav): HTMLElement {
@@ -95,6 +142,7 @@ export function homeScreen(nav: Nav): HTMLElement {
       tile('help', 'Placer le téléphone', 'Conseils trépied', () => nav('help')),
       Object.assign(tile('settings', 'Réglages', 'Voix, précision, données', () => nav('settings')), { className: 'tile wide' }),
     ),
+    installCard(),
     h('p', { class: 'status-pill' }, h('i', {}), status),
   );
 }

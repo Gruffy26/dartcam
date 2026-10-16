@@ -23,6 +23,9 @@ const PATHS: Record<string, string> = {
   flag: 'M5 21V4M5 4h11l-2 4 2 4H5',
   download: 'M12 4v12M7 11l5 5 5-5M5 20h14',
   video: 'M4 7h11v10H4zM15 10l5-3v10l-5-3',
+  // Partager, façon iOS : une boîte et une flèche qui en sort par le haut.
+  share: 'M12 15V4M8.5 7.5L12 4l3.5 3.5M7 11H5v9h14v-9h-2',
+  plus_square: 'M5 5h14v14H5zM12 9v6M9 12h6',
 };
 
 export function icon(name: keyof typeof PATHS | string, size = 22): SVGSVGElement {

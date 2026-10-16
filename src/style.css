@@ -343,6 +343,43 @@ input { font: inherit; color: inherit; }
 .tile b { font-size: 1rem; font-weight: 700; }
 .tile small { color: var(--muted); font-size: 0.84rem; }
 
+.install {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: 20px;
+  background: var(--surface);
+  border: 1px dashed rgba(124, 200, 255, 0.4);
+}
+.install b { font-size: 1rem; }
+.install p { margin: 0; color: var(--muted); font-size: 0.88rem; }
+.install ol { margin: 4px 0 0; padding-left: 20px; display: grid; gap: 7px; font-size: 0.92rem; }
+.install li { line-height: 1.5; }
+.install small { color: var(--faint); font-size: 0.8rem; }
+.install .ikey {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  margin: 0 2px;
+  border-radius: 7px;
+  background: var(--surface-3);
+  color: var(--info);
+  vertical-align: -5px;
+}
+.install-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: var(--faint);
+}
+
 .status-pill {
   margin-top: auto;
   padding: 10px 0 4px;

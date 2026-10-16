@@ -44,6 +44,25 @@ export function settingsScreen(nav: Nav): HTMLElement {
     advanced.classList.toggle('hidden');
   });
 
+  // État de l'installation : l'app tourne-t-elle en plein écran, et est-elle prête hors ligne ?
+  const offlineRow = row('Hors ligne', 'Vérification…', null);
+  void (async () => {
+    const standalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (navigator as unknown as { standalone?: boolean }).standalone === true;
+    let cached = false;
+    try {
+      const keys = await caches.keys();
+      cached = keys.some((k) => k.startsWith('dartcam-')) && !!navigator.serviceWorker?.controller;
+    } catch {
+      cached = false;
+    }
+    const el = offlineRow.querySelector('.row-sub');
+    if (el) {
+      el.textContent = `${cached ? 'Prête à jouer sans réseau' : 'Pas encore enregistrée (recharge l’app une fois en ligne)'} · ${standalone ? 'installée sur l’écran d’accueil' : 'ouverte dans Safari'}`;
+    }
+  })();
+
   // Collecte d'exemples : nombre gardé, export en ZIP, effacement.
   const countRow = row('Exemples enregistrés', 'Chargement…', null);
   const sub = () => countRow.querySelector('.row-sub');
@@ -121,7 +140,12 @@ export function settingsScreen(nav: Nav): HTMLElement {
       exportBtn,
       clearBtn,
     ),
-    group('À propos', row('Version', __BUILD_ID__, null), row('Recharger l’app', 'Pour récupérer la dernière version', null, () => location.reload())),
+    group(
+      'À propos',
+      row('Version', __BUILD_ID__, null),
+      offlineRow,
+      row('Recharger l’app', 'Pour récupérer la dernière version', null, () => location.reload()),
+    ),
   );
 }
 
