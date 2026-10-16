@@ -396,3 +396,73 @@ run('exports de l’app — coût de l’analyse', () => {
     det.dispose();
   }, 300000);
 });
+
+run('exports de l’app — volée entière', () => {
+  it.skipIf(!process.env.CHAIN)('rejoue chaque volée image par image', async () => {
+    const cv = await loadCvForTests();
+    const metas: Meta[] = JSON.parse(readFileSync(join(dir!, 'flechettes.json'), 'utf8'));
+    const byVolley = new Map<string, Meta[]>();
+    for (const m of metas) {
+      if (!m.image || !existsSync(bmpOf(m))) continue;
+      byVolley.set(m.volley, [...(byVolley.get(m.volley) ?? []), m].sort((a, b) => a.index - b.index));
+    }
+    let volleys = 0;
+    let perfect = 0;
+    let darts = 0;
+    let found = 0;
+    let right = 0;
+    for (const [id, list] of [...byVolley].sort()) {
+      // Il faut l'image d'avant la volée, sinon la première fléchette n'est pas rejouable.
+      if (list[0].index !== 0 || list.length < 2) continue;
+      const base = list[0];
+      if (!base.f2b) continue;
+      const first = readBmp(bmpOf(base));
+      const det = new DartDetector(cv, {
+        frameToBoard: base.f2b,
+        width: first.width,
+        height: first.height,
+        zoom: base.calib?.zoom,
+      });
+      let t = 0;
+      for (let i = 0; i < 12; i++, t += 100) det.process(first, t);
+      const got: string[] = [];
+      const ignored: string[] = [];
+      for (const m of list.slice(1)) {
+        const img = readBmp(bmpOf(m));
+        for (let i = 0; i < 14; i++, t += 100) {
+          for (const e of det.process(img, t)) {
+            if (e.kind === 'dart') got.push(e.score.libelle);
+            else if (e.kind === 'ignored') {
+              const sh = det.debug.shape;
+              ignored.push(
+                e.reason === 'no-tip' && sh
+                  ? `no-tip(aire ${e.area}, droit ${sh.straight.toFixed(2)}, larg ${sh.width.toFixed(0)}, long ${sh.lengthRatio.toFixed(2)})`
+                  : `${e.reason}(${e.area})`,
+              );
+            }
+          }
+        }
+      }
+      det.dispose();
+      const truth = list.slice(1).filter((m) => m.origin !== 'miss').map((m) => m.score);
+      volleys++;
+      darts += truth.length;
+      const rest = [...truth];
+      let ok = 0;
+      for (const g of got) {
+        const k = rest.indexOf(g);
+        if (k >= 0) {
+          rest.splice(k, 1);
+          ok++;
+        }
+      }
+      found += Math.min(got.length, truth.length);
+      right += ok;
+      if (ok === truth.length && got.length === truth.length) perfect++;
+      else {
+        console.log(`  ${id.slice(11, 19)} attendu [${truth.join(', ')}] → [${got.join(', ')}]  rejets: ${[...new Set(ignored)].join(',') || '—'}`);
+      }
+    }
+    console.log(`\n${volleys} volées rejouées, ${darts} fléchettes : ${right} comptées juste (${((100 * right) / darts).toFixed(0)}%), ${perfect} volées parfaites (${((100 * perfect) / volleys).toFixed(0)}%)`);
+  }, 900000);
+});

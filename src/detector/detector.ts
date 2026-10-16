@@ -31,6 +31,12 @@ import { extendTip, findTip, locateDart, mergeAlongAxis, scoreFragile, type TipR
  */
 export const TIP = { blurPx: 2.75, doubtMm: 2 };
 
+/** Au-delà, un changement jamais expliqué est considéré comme un changement de décor. */
+const UNEXPLAINED_MS = 12000;
+
+/** Largeur maximale plausible d'une fléchette vue de côté (empennage compris), en mm. */
+const MAX_DART_WIDTH_MM = 45;
+
 export interface DartEvent {
   kind: 'dart';
   /** Pointe et empennage, en pixels de l'image analysée. */
@@ -255,6 +261,8 @@ export class DartDetector {
   private volleyStartC: any = null;
   /** Fléchettes comptées depuis le début de la volée (détectées ou ajoutées à la main). */
   private dartsSinceStart = 0;
+  /** Depuis quand un changement de la taille d'une fléchette reste inexpliqué (ms). */
+  private unexplainedSince = 0;
 
   constructor(cv: CV, calib: Calib, params: Partial<DetectorParams> = {}) {
     this.cv = cv;
@@ -347,6 +355,12 @@ export class DartDetector {
    */
   private get px(): number {
     return this.calib.width / 640;
+  }
+
+  /** Millimètres sur la cible par pixel de l'image analysée (au centre). */
+  private get mmPerPx(): number {
+    const H = this.calib.frameToBoard;
+    return Math.sqrt(Math.abs(H[0] * H[4] - H[1] * H[3])) || 1;
   }
 
   private get minArea() {
@@ -529,7 +543,7 @@ export class DartDetector {
             this.startVolley(cur, curC);
             events.push({ kind: 'cleared' });
           } else if (this.mode === 'throwing') {
-            for (const ev of this.analyse(cur, curC, settled ? 'settled' : 'periodic')) {
+            for (const ev of this.analyse(cur, curC, settled ? 'settled' : 'periodic', t)) {
               if (ev.kind === 'dart') this.dartsSinceStart++;
               events.push(ev);
             }
@@ -571,7 +585,7 @@ export class DartDetector {
    *   changements de lumière ou d'ombre) — une fléchette qui se plante crée toujours un
    *   mouvement, donc on ne cherche jamais de fléchette ici (évite les « 0 » fantômes).
    */
-  private analyse(cur: any, curC: any, mode: 'settled' | 'periodic'): DetectorEvent[] {
+  private analyse(cur: any, curC: any, mode: 'settled' | 'periodic', now = 0): DetectorEvent[] {
     const cv = this.cv;
     const t0 = performance.now();
     const dd = this.diffTo(this.ref, this.refC, cur, curC);
@@ -601,15 +615,29 @@ export class DartDetector {
       this.debug.area = largestArea;
 
       if (mode === 'periodic') {
-        // Pas de mouvement : ce n'est pas une fléchette. On absorbe le changement, sauf
-        // une personne immobile devant la cible (on attendra qu'elle parte).
-        if (largestArea <= this.maxArea) this.replaceRef(cur, curC);
-        return [];
+        // Petit changement (lumière, bruit) : la référence le suit.
+        if (largestArea < this.minArea) {
+          this.replaceRef(cur, curC);
+          this.unexplainedSince = 0;
+          return [];
+        }
+        // Changement de la taille d'une fléchette, sans mouvement vu : ne pas l'absorber,
+        // sinon une fléchette ratée disparaît définitivement de la référence. On retente
+        // la mesure ; la vérification de forme protège des fausses fléchettes.
+        if (!this.unexplainedSince) this.unexplainedSince = now;
+        if (now - this.unexplainedSince > UNEXPLAINED_MS) {
+          // Au bout d'un moment, c'est le décor qui a changé : on l'accepte.
+          this.replaceRef(cur, curC);
+          this.unexplainedSince = 0;
+          return [];
+        }
+        if (largestArea > this.maxArea) return [];
       }
       if (largestArea > this.maxArea) {
         // Main, bras, personne devant : on garde la référence et on attend.
         return [{ kind: 'ignored', reason: 'big', area: largestArea }];
       }
+      this.unexplainedSince = 0;
       if (!largest || largestArea < this.minArea / 3) {
         // Rien (ou du bruit) : la référence suit les petits changements de lumière.
         this.replaceRef(cur, curC);
@@ -631,7 +659,9 @@ export class DartDetector {
       for (let k = 0; k < 3 && comps.size; k++) {
         let main = -1;
         for (const [l] of comps) if (main < 0 || areas[l] > areas[main]) main = l;
-        if (areas[main] < this.minArea / 3) break;
+        // La première tache peut être modeste ; les suivantes doivent vraiment peser,
+        // sinon un reste de bruit passe pour une deuxième fléchette.
+        if (areas[main] < (k === 0 ? this.minArea / 3 : this.minArea)) break;
         const res = this.findDart(main, comps, absdM);
         if (k === 0) this.debug.area = res.area;
         for (const l of res.used) comps.delete(l);
@@ -681,6 +711,27 @@ export class DartDetector {
       xy = mergeAlongAxis({ xy: mainXy }, others.map(([, p]) => ({ xy: p }))).xy;
       used = [];
     }
+    const first = this.measureDart(xy, used, mainCenter, absdM);
+    // Deux fléchettes proches se retrouvent parfois dans la même tache : la forme
+    // obtenue est alors trop large. On réessaie avec la tache principale seule.
+    if (!first.event && first.reason === 'no-tip' && used.length) {
+      const solo = this.measureDart(mainXy, [], mainCenter, absdM);
+      // On n'accepte ce repli que s'il tombe dans la cible : un morceau de tache mesuré
+      // tout seul atterrit souvent hors zone et ne vaut pas une fléchette.
+      if (solo.event && solo.event.score.points > 0) return solo;
+    }
+    return first;
+  }
+
+  /** Mesure une fléchette sur un ensemble de pixels donné. */
+  private measureDart(
+    xy: number[],
+    used: number[],
+    mainCenter: Pt,
+    absdM: any,
+  ): { event?: DartEvent; used: number[]; area: number; reason?: 'small' | 'no-tip' } {
+    const F2B = this.calib.frameToBoard;
+    const outDir = this.cam ? outDirection(this.cam, applyH(F2B, mainCenter)) : null;
     const area = xy.length / 2;
     if (area < this.minArea) return { used: [], area, reason: 'small' };
 
@@ -696,7 +747,16 @@ export class DartDetector {
     const shape = dartShape(xy, tip);
     this.debug.shape = { ...shape, lengthRatio: expected ? tip.length / expected : 0 };
     if (expected > 0 && (tip.length < expected * 0.3 || tip.length > expected * 2.2)) return { used, area, reason: 'no-tip' };
-    if (shape.straight < 0.15 || shape.width > Math.max(14 * this.px, tip.length * 0.6)) return { used, area, reason: "no-tip" };
+    // Largeur jugée en millimètres sur la cible, pas en proportion de la longueur : une
+    // fléchette qui pointe vers l'objectif se projette courte et large, et la règle
+    // proportionnelle la rejetait alors qu'un empennage ne dépasse pas ~4 cm.
+    // Deux manières d'être assez fine : étroite en millimètres sur la cible, ou étroite
+    // par rapport à sa longueur. La première rattrape les fléchettes qui pointent vers
+    // l'objectif (projetées courtes et larges), la seconde les vues très en biais, dont
+    // le corps hors du plan de la cible paraît large une fois converti en millimètres.
+    const thin =
+      shape.width * this.mmPerPx <= MAX_DART_WIDTH_MM || shape.width <= Math.max(14 * this.px, tip.length * 0.6);
+    if (shape.straight < 0.15 || !thin) return { used, area, reason: 'no-tip' };
 
     // Le bout du fût est souvent peu contrasté : on prolonge avec un seuil plus bas.
     // Couleur incluse : un fût gris reste visible quand il traverse un anneau rouge ou vert.
