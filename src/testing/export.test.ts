@@ -10,8 +10,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'vitest';
 import { scoreFromBoardCoords } from '../board';
-import { DartDetector, TIP, type DartEvent } from '../detector/detector';
-import { applyH, type Mat3 } from '../homography';
+import { analysisBounds, DartDetector, TIP, type DartEvent } from '../detector/detector';
+import { applyH, multiplyH, type Mat3 } from '../homography';
 import { readBmp } from './bmp';
 import { loadCvForTests } from './cv-node';
 
@@ -64,6 +64,16 @@ function shrink(im: { data: Uint8ClampedArray; width: number; height: number }, 
   return { data: out, width: w, height: h };
 }
 
+/** Découpe un rectangle de l'image. */
+function cut(im: { data: Uint8ClampedArray; width: number; height: number }, b: { x: number; y: number; w: number; h: number }) {
+  const out = new Uint8ClampedArray(b.w * b.h * 4);
+  for (let y = 0; y < b.h; y++) {
+    const src = ((b.y + y) * im.width + b.x) * 4;
+    out.set(im.data.subarray(src, src + b.w * 4), y * b.w * 4);
+  }
+  return { data: out, width: b.w, height: b.h };
+}
+
 /** Homographie image → cible quand l'image est réduite d'un facteur `k`. */
 function scaleH(H: Mat3, k: number): Mat3 {
   if (k === 1) return H;
@@ -97,6 +107,8 @@ run('exports de l’app', () => {
     let tested = 0;
     let found = 0;
     let right = 0;
+    let cropped = 0;
+    let cropCount = 0;
     let flagged = 0;
     let flaggedWrong = 0;
     let missedWrong = 0;
@@ -109,11 +121,24 @@ run('exports de l’app', () => {
         if (cur.index === 0) continue; // image de référence d'avant la volée
         if (cur.origin !== 'auto' && !process.env.MANUAL) continue; // ajoutée à la main
         if (cur.origin === 'miss') continue;
-        const ref = shrink(readBmp(bmpOf(prev)), reduce);
-        const img = shrink(readBmp(bmpOf(cur)), reduce);
+        let ref = shrink(readBmp(bmpOf(prev)), reduce);
+        let img = shrink(readBmp(bmpOf(cur)), reduce);
+        let F2B = scaleH(cur.f2b!, reduce);
+        if (process.env.CROP) {
+          const b = analysisBounds(
+            { frameToBoard: F2B, width: img.width, height: img.height, zoom: cur.calib?.zoom },
+            30,
+            Number(process.env.PAD ?? 8),
+          );
+          cropped += (b.w * b.h) / (img.width * img.height);
+          cropCount++;
+          ref = cut(ref, b);
+          img = cut(img, b);
+          F2B = multiplyH(F2B, [1, 0, b.x, 0, 1, b.y, 0, 0, 1]);
+        }
         if (inMm) TIP.blurPx = blur / scaleOf(cur.f2b!);
         const det = new DartDetector(cv, {
-          frameToBoard: scaleH(cur.f2b!, reduce),
+          frameToBoard: F2B,
           width: img.width,
           height: img.height,
           zoom: cur.calib?.zoom,
@@ -163,6 +188,7 @@ run('exports de l’app', () => {
       }
     }
     console.log(`\ndécalage pointe ${blur} ${inMm ? 'mm' : 'px'} — rejouées ${tested}, détectées ${found}, bon score ${right} (${((100 * right) / tested).toFixed(0)}%)`);
+    if (cropCount) console.log(`  zone analysée : ${((100 * cropped) / cropCount).toFixed(0)} % de l'image`);
     console.log(`  marquées « ? » : ${flagged} (${flaggedWrong} vraiment fausses, ${missedWrong} fausses non marquées)`);
     if (!process.env.QUIET) for (const line of far) console.log('  ' + line);
     }

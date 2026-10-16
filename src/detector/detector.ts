@@ -107,6 +107,39 @@ function zonePolygon(calib: Calib, cam: CameraModel | null, marginMm: number): n
   return convexHull(pts).flatMap((p) => [Math.round(p.x), Math.round(p.y)]);
 }
 
+/**
+ * Rectangle de l'image qui contient la cible, sa marge et le corps des fléchettes.
+ *
+ * Tout le reste (le mur, le meuble, le sol) ne sert jamais à la détection : l'analyser
+ * coûte du calcul et de la batterie pour rien. Le rectangle est rendu en pixels de
+ * l'image décrite par `calib`, élargi d'une marge de sécurité et borné par l'image.
+ */
+export function analysisBounds(calib: Calib, marginMm: number, padPx = 8): { x: number; y: number; w: number; h: number } {
+  const cam = cameraFromHomography(
+    invertH(calib.frameToBoard),
+    calib.width,
+    calib.height,
+    defaultFocalFor(calib.width, calib.height, calib.zoom ?? 1),
+  );
+  const poly = zonePolygon(calib, cam, marginMm);
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (let i = 0; i < poly.length; i += 2) {
+    x0 = Math.min(x0, poly[i]);
+    x1 = Math.max(x1, poly[i]);
+    y0 = Math.min(y0, poly[i + 1]);
+    y1 = Math.max(y1, poly[i + 1]);
+  }
+  if (!Number.isFinite(x0) || !Number.isFinite(y0)) return { x: 0, y: 0, w: calib.width, h: calib.height };
+  x0 = Math.max(0, Math.floor(x0 - padPx));
+  y0 = Math.max(0, Math.floor(y0 - padPx));
+  x1 = Math.min(calib.width, Math.ceil(x1 + padPx));
+  y1 = Math.min(calib.height, Math.ceil(y1 + padPx));
+  return { x: x0, y: y0, w: Math.max(2, x1 - x0), h: Math.max(2, y1 - y0) };
+}
+
 /** Longueur à l'image (px) d'une fléchette de 12 cm plantée perpendiculairement au point `b` (mm). */
 function expectedDartLength(cam: CameraModel, b: Pt): number {
   const a = project(cam, b.x, b.y, 0);

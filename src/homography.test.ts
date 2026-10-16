@@ -76,3 +76,17 @@ describe('homographie', () => {
     }
   }, 30000);
 });
+
+describe('découpage de l’image', () => {
+  it('décaler l’origine de l’image revient à composer avec une translation', () => {
+    const H: Mat3 = [1.2, -0.05, -300, -0.3, -1.1, 700, 0.0007, 0.0006, 1];
+    const off = { x: 120, y: 260 };
+    const Hc = multiplyH(H, [1, 0, off.x, 0, 1, off.y, 0, 0, 1]);
+    for (const p of [{ x: 0, y: 0 }, { x: 37, y: 91 }, { x: 410, y: 530 }]) {
+      const a = applyH(H, { x: p.x + off.x, y: p.y + off.y });
+      const b = applyH(Hc, p);
+      expect(b.x).toBeCloseTo(a.x, 9);
+      expect(b.y).toBeCloseTo(a.y, 9);
+    }
+  });
+});

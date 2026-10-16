@@ -12,13 +12,13 @@ import {
   type Calibration,
 } from '../calibration';
 import { createCameraStage, type FrameInfo } from '../camera-stage';
-import { DartDetector, type DartEvent } from '../detector/detector';
+import { analysisBounds, DartDetector, type DartEvent } from '../detector/detector';
 import { h } from '../dom';
 import { frameToScreen } from '../frameview';
 import { suggestCheckout } from '../game/checkout';
 import { clearGame, loadGame, saveGame } from '../game/store';
 import { commitTurn, evaluateTurn, newGame, playerStats, remainingScores, undoTurn, type GameState, type TurnEval } from '../game/x01';
-import { type Mat3, type Pt } from '../homography';
+import { multiplyH, type Mat3, type Pt } from '../homography';
 import { icon } from '../icons';
 import type { Nav, Screen } from '../main';
 import { loadOpenCV, type CV } from '../opencv';
@@ -42,6 +42,9 @@ const ACTIVE_INTERVAL_MS = 100;
  * cadence pleine, et la fléchette n'est de toute façon mesurée qu'une fois immobile.
  */
 const IDLE_INTERVAL_MS = 320;
+/** Marge gardée autour de la cible dans l'image analysée (px). Vérifiée sur de vraies
+ * parties : en dessous, un bout de fléchette peut être coupé et un score change. */
+const BOUNDS_PAD = 48;
 
 type StatusKind = 'info' | 'ready' | 'wait' | 'alert';
 
@@ -181,6 +184,8 @@ export function gameScreen(nav: Nav): Screen {
 
   function useCalibration(c: Calibration) {
     cal = c;
+    bounds = null;
+    fullSize = null;
     scheduleDraw();
     dropDetector();
     // Exposition / balance des blancs bloquées si possible (luminosité stable).
@@ -190,6 +195,8 @@ export function gameScreen(nav: Nav): Screen {
   function dropDetector() {
     detector?.dispose();
     detector = null;
+    bounds = null;
+    fullSize = null;
   }
 
   let zoomTimer = 0;
@@ -289,8 +296,10 @@ export function gameScreen(nav: Nav): Screen {
   /** Garde les fléchettes de la volée pour améliorer la détection (si l'option est active). */
   function capture(darts: DartRecord[], note = '') {
     if (!getSettings().collect || !darts.length) return;
-    const err = cal && detSize.w ? reprojectionError(cal.points, detSize.w, detSize.h) : 0;
-    void addVolley(darts, new Map(shots), cal, err, getSettings().detector, __BUILD_ID__, note, note ? null : startShot);
+    const err = cal && fullSize ? reprojectionError(cal.points, fullSize.w, fullSize.h) : 0;
+    const med = (v: number[]) => (v.length ? [...v].sort((a, b) => a - b)[v.length >> 1] : 0);
+    const perf = { w: detSize.w, h: detSize.h, ms: med(perfMs), gapMs: med(perfGap) };
+    void addVolley(darts, new Map(shots), cal, err, getSettings().detector, __BUILD_ID__, perf, note, note ? null : startShot);
   }
 
   function cleared(manual: boolean) {
@@ -401,9 +410,7 @@ export function gameScreen(nav: Nav): Screen {
   // --- Corrections -------------------------------------------------------------
   function currentShot(): { img: ImageData; f2b: Mat3 } | null {
     const f = cam.frame();
-    if (!f || !detector) return null;
-    const img = grab(f);
-    return img ? { img, f2b: detector.frameToBoard } : null;
+    return f && detector ? grab(f) : null;
   }
 
   function editDart(i: number) {
@@ -543,23 +550,43 @@ export function gameScreen(nav: Nav): Screen {
   let analysisWidth = Math.max(320, Math.round(getSettings().analysisWidth));
   /** Temps d'analyse des dernières images, pour décider du repli. */
   const times: number[] = [];
+  /** Taille de l'image analysée si on prenait tout le cadre, et zone réellement analysée. */
+  let fullSize: { w: number; h: number } | null = null;
+  let bounds: { x: number; y: number; w: number; h: number } | null = null;
   /** Dernier événement du détecteur : on reste réactif juste après. */
   let lastEventAt = 0;
+  /** Coût réel de l'analyse (temps par image et cadence), pour les enregistrements. */
+  const perfMs: number[] = [];
+  const perfGap: number[] = [];
+  let lastAnalyseAt = 0;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 
-  function grab(f: FrameInfo): ImageData | null {
+  /**
+   * Image à analyser. Elle est découpée autour de la cible : le mur et le meuble autour
+   * ne servent jamais à la détection, et les analyser coûterait du calcul pour rien.
+   * Le découpage est assez large pour garder le corps des fléchettes ; vérifié sur de
+   * vraies parties, il rend exactement les mêmes scores.
+   */
+  function grab(f: FrameInfo): { img: ImageData; f2b: Mat3 } | null {
     const v = cam.source?.video;
-    if (!v) return null;
+    if (!v || !cal) return null;
     // Inutile d'agrandir au-delà de ce que la caméra fournit réellement.
     const w = Math.min(analysisWidth, Math.round(f.crop.w));
     const hh = Math.round((f.crop.h * w) / f.crop.w);
-    if (canvas.width !== w || canvas.height !== hh) {
-      canvas.width = w;
-      canvas.height = hh;
+    const full = frameToBoard(cal.points, w, hh);
+    if (!fullSize || fullSize.w !== w || fullSize.h !== hh || bounds == null) {
+      fullSize = { w, h: hh };
+      bounds = analysisBounds({ frameToBoard: full, width: w, height: hh, zoom: cal.zoom }, getSettings().detector.marginMm, BOUNDS_PAD);
     }
-    ctx.drawImage(v, f.crop.x, f.crop.y, f.crop.w, f.crop.h, 0, 0, w, hh);
-    return ctx.getImageData(0, 0, w, hh);
+    const b = bounds;
+    if (canvas.width !== b.w || canvas.height !== b.h) {
+      canvas.width = b.w;
+      canvas.height = b.h;
+    }
+    const k = f.crop.w / w; // pixels de la source par pixel d'analyse
+    ctx.drawImage(v, f.crop.x + b.x * k, f.crop.y + b.y * k, b.w * k, b.h * k, 0, 0, b.w, b.h);
+    return { img: ctx.getImageData(0, 0, b.w, b.h), f2b: multiplyH(full, [1, 0, b.x, 0, 1, b.y, 0, 0, 1]) };
   }
 
   function analyse() {
@@ -567,19 +594,26 @@ export function gameScreen(nav: Nav): Screen {
     if (game.winner != null) return;
     const f = cam.frame();
     if (!f || !cal || !cv) return;
-    const img = grab(f);
-    if (!img) return;
+    const got = grab(f);
+    if (!got) return;
+    const { img } = got;
     if (!detector || detSize.w !== img.width || detSize.h !== img.height) {
       dropDetector();
       detector = new DartDetector(
         cv,
-        { frameToBoard: frameToBoard(cal.points, img.width, img.height), width: img.width, height: img.height, zoom: cal.zoom },
+        { frameToBoard: got.f2b, width: img.width, height: img.height, zoom: cal.zoom },
         getSettings().detector,
       );
       detSize = { w: img.width, h: img.height };
       if (turnOver() || game.winner != null) detector.setMode('removal');
     }
-    const events = detector.process(img, performance.now());
+    const now0 = performance.now();
+    if (lastAnalyseAt) perfGap.push(now0 - lastAnalyseAt);
+    lastAnalyseAt = now0;
+    const events = detector.process(img, now0);
+    perfMs.push(detector.debug.processMs);
+    if (perfMs.length > 150) perfMs.shift();
+    if (perfGap.length > 150) perfGap.shift();
     if (events.length) lastEventAt = performance.now();
     for (const ev of events) {
       if (ev.kind === 'dart') onDart(ev, img);
@@ -641,7 +675,10 @@ export function gameScreen(nav: Nav): Screen {
 
   // --- Dessin sur l'aperçu caméra -----------------------------------------
   function toScreen(f: FrameInfo, p: Pt): Pt {
-    return frameToScreen(f.screen, { x: p.x / detSize.w, y: p.y / detSize.h });
+    // L'image analysée est une découpe du cadre : on replace le point dans le cadre entier.
+    const fs = fullSize ?? { w: detSize.w, h: detSize.h };
+    const b = bounds ?? { x: 0, y: 0 };
+    return frameToScreen(f.screen, { x: (b.x + p.x) / fs.w, y: (b.y + p.y) / fs.h });
   }
 
   /** Redessine une fois, à la prochaine image de l'écran (sans boucle permanente). */

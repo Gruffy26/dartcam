@@ -82,3 +82,23 @@ function projectTruth(p: CameraPose, x: number, y: number, z: number) {
   const dt = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
   return { x: p.width / 2 + (p.focal * dt(r, v)) / dt(f, v), y: p.height / 2 + (p.focal * dt(d, v)) / dt(f, v) };
 }
+
+describe('zone analysée', () => {
+  it('garde la cible et le corps des fléchettes, en laissant tomber le reste', async () => {
+    const { analysisBounds } = await import('./detector');
+    const { boardPoint, RADII } = await import('../board');
+    const { invertH, applyH } = await import('../homography');
+    const B2I = cameraHomography(pose({ yawDeg: -29, pitchDeg: -5, distance: 800 }));
+    const F2B = invertH(B2I);
+    const b = analysisBounds({ frameToBoard: F2B, width: W, height: H }, 30, 48);
+    // Plus petit que le cadre entier, mais contenant tout le tour de la cible.
+    expect(b.w * b.h).toBeLessThan(W * H * 0.8);
+    for (let a = 0; a < 360; a += 15) {
+      const p = applyH(B2I, boardPoint(RADII.doubleOuter + 20, a));
+      expect(p.x).toBeGreaterThanOrEqual(b.x);
+      expect(p.y).toBeGreaterThanOrEqual(b.y);
+      expect(p.x).toBeLessThanOrEqual(b.x + b.w);
+      expect(p.y).toBeLessThanOrEqual(b.y + b.h);
+    }
+  });
+});

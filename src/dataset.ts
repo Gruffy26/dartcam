@@ -40,6 +40,8 @@ export interface SampleMeta {
   /** « supprimee » : fléchette détectée à tort, effacée par l'utilisateur. */
   note: string;
   params: DetectorParams;
+  /** Coût réel de l'analyse pendant la volée : taille analysée, temps et cadence. */
+  perf: { w: number; h: number; ms: number; gapMs: number } | null;
   image: string | null;
 }
 
@@ -106,6 +108,7 @@ export async function addVolley(
   errMm: number,
   params: DetectorParams,
   build: string,
+  perf: SampleMeta['perf'] = null,
   note = '',
   /** Image de la cible avant la volée : référence pour rejouer la première fléchette. */
   start: ShotInfo | null = null,
@@ -134,6 +137,7 @@ export async function addVolley(
         uncertain: false,
         note: 'debut',
         params,
+        perf,
         image: jpeg ? `${volley}-0.jpg` : null,
       };
       const tx = db.transaction(STORE, 'readwrite');
@@ -163,6 +167,7 @@ export async function addVolley(
         uncertain: !!d.uncertain,
         note,
         params,
+        perf,
         image: jpeg ? `${volley}-${i + 1}.jpg` : null,
       };
       const tx = db.transaction(STORE, 'readwrite');
@@ -219,7 +224,7 @@ async function allSamples(): Promise<StoredSample[]> {
 
 /** Résumé lisible : une ligne par fléchette, pour ouvrir dans un tableur. */
 export function toCsv(metas: SampleMeta[]): string {
-  const head = 'date,build,volee,flechette,score_auto,score_final,points,corrige,doute,origine,note,tip_x,tip_y,mm_x,mm_y,calib_err_mm,zoom,image';
+  const head = 'date,build,volee,flechette,score_auto,score_final,points,corrige,doute,origine,note,tip_x,tip_y,mm_x,mm_y,calib_err_mm,zoom,analyse,ms,cadence_ms,image';
   const rows = metas.map((m) =>
     [
       m.at,
@@ -239,6 +244,9 @@ export function toCsv(metas: SampleMeta[]): string {
       m.board ? m.board.y.toFixed(2) : '',
       m.calib ? m.calib.errMm.toFixed(2) : '',
       m.calib ? m.calib.zoom : '',
+      m.perf ? `${m.perf.w}x${m.perf.h}` : '',
+      m.perf ? m.perf.ms.toFixed(1) : '',
+      m.perf ? m.perf.gapMs.toFixed(0) : '',
       m.image ?? '',
     ].join(','),
   );
