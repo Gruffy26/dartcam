@@ -527,6 +527,7 @@ export function gameScreen(nav: Nav): Screen {
       players: cfg.players,
       start: (cfg.start as 301 | 501) ?? 501,
       doubleOut: cfg.doubleOut ?? true,
+      drill: cfg.drill ?? 'scoring',
     });
     volley = new Volley();
     shots.clear();

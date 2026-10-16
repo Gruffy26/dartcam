@@ -5,7 +5,7 @@ import { labelOf, makeEngine, modeOf, newState, summaryLines, type AnyConfig } f
 const T = (n: number) => makeScore(n, 3);
 const S = (n: number) => makeScore(n, 1);
 const D = (n: number) => makeScore(n, 2);
-const cfg = (over: Partial<AnyConfig>): AnyConfig => ({ mode: 'x01', players: ['A', 'B'], start: 501, doubleOut: true, ...over });
+const cfg = (over: Partial<AnyConfig>): AnyConfig => ({ mode: 'x01', players: ['A', 'B'], start: 501, doubleOut: true, drill: 'scoring', ...over });
 
 describe('moteur commun', () => {
   it('reconnaît chaque jeu et le nomme', () => {
@@ -53,6 +53,16 @@ describe('moteur commun', () => {
     expect(summaryLines(e.state)[0].value).toBe('2/20');
   });
 
+  it('Entraînement : score, cible annoncée et fin d’exercice', () => {
+    const e = makeEngine(newState(cfg({ mode: 'training', drill: 'bob27', players: ['A'] })));
+    expect(labelOf(e.state)).toBe('Entraînement · Bob 27');
+    expect(e.evaluate([D(1)]).total).toBe('+2');
+    e.commit([D(1), S(1), S(1)]);
+    expect(e.lastSummary()).toBe('+2');
+    expect(e.nextSay()).toBe('29 points. Vise le D2.');
+    expect(summaryLines(e.state)[0].value).toBe('29');
+  });
+
   it('annule la dernière volée dans chaque jeu', () => {
     for (const mode of ['x01', 'cricket', 'horloge'] as const) {
       const e = makeEngine(newState(cfg({ mode })));
@@ -76,7 +86,7 @@ describe('moteur commun', () => {
   });
 
   it('le tableau de fin a autant de colonnes que d’entêtes', () => {
-    for (const mode of ['x01', 'cricket', 'doubles'] as const) {
+    for (const mode of ['x01', 'cricket', 'doubles', 'training'] as const) {
       const e = makeEngine(newState(cfg({ mode })));
       e.commit([T(20)]);
       const { head, rows } = e.stats();

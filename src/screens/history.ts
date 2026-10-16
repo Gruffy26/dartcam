@@ -1,5 +1,5 @@
 import { h } from '../dom';
-import { clearHistory, history, totals, type GameRecord } from '../game/history';
+import { clearHistory, history, totals, trainingProgress, type GameRecord } from '../game/history';
 import { icon } from '../icons';
 import type { Nav } from '../main';
 import { appBar, group, row } from '../ui';
@@ -30,7 +30,8 @@ function gameCard(g: GameRecord): HTMLElement {
         h(
           'div',
           { class: 'hist-player' + (p.won ? ' won' : '') },
-          h('span', { class: 'hist-name' }, p.won ? '🏆 ' + p.name : p.name),
+          // Seul contre soi-même, la coupe n'apprend rien : c'est le score qui compte.
+          h('span', { class: 'hist-name' }, p.won && g.players.length > 1 ? '🏆 ' + p.name : p.name),
           h('span', { class: 'hist-res' }, p.result),
           h('span', { class: 'hist-darts' }, `${p.darts} fl.`),
         ),
@@ -43,8 +44,23 @@ export function historyScreen(nav: Nav): HTMLElement {
   const games = history();
   const list = h('div', { class: 'hist-list' }, ...games.map(gameCard));
 
+  const drills = trainingProgress(games);
   const body = games.length
     ? [
+        ...(drills.length
+          ? [
+              group(
+                'Progression à l’entraînement',
+                ...drills.map((d) =>
+                  row(
+                    d.label.replace('Entraînement · ', ''),
+                    `${d.count} séance${d.count > 1 ? 's' : ''} · dernière ${d.last}`,
+                    h('span', { class: 'tot-right' }, h('b', {}, String(d.best)), h('small', {}, 'record')),
+                  ),
+                ),
+              ),
+            ]
+          : []),
         group(
           'Depuis le début',
           ...totals(games).map((t) =>

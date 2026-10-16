@@ -8,9 +8,21 @@ import type { Score } from '../board';
 import { commitCricket, cricketStats, evaluateCricket, newCricket, undoCricket, type CricketState } from './cricket';
 import type { GameMode, GameRecord } from './history';
 import { commitSequence, evaluateSequence, newSequence, progress, sequenceStats, targetAt, undoSequence, type SequenceState } from './sequence';
+import {
+  commitTraining,
+  DRILLS,
+  drillTarget,
+  evaluateTraining,
+  newTraining,
+  standing,
+  trainingStats,
+  undoTraining,
+  type DrillKind,
+  type TrainingState,
+} from './training';
 import { commitTurn, evaluateTurn, newGame, playerStats, remainingScores, undoTurn, type GameConfig, type GameState } from './x01';
 
-export type AnyState = GameState | CricketState | SequenceState;
+export type AnyState = GameState | CricketState | SequenceState | TrainingState;
 
 export interface VolleyEval {
   /** La volée est terminée (3 fléchettes, bust ou victoire). */
@@ -45,6 +57,7 @@ export interface Engine {
 }
 
 export function modeOf(state: AnyState): GameMode {
+  if ('kind' in state && state.kind === 'training') return 'training';
   if ('kind' in state && state.kind === 'cricket') return 'cricket';
   if ('kind' in state && state.kind === 'sequence') return state.config.kind;
   return 'x01';
@@ -57,6 +70,7 @@ export function labelOf(state: AnyState): string {
     return `${c.start} · ${c.doubleOut ? 'double out' : 'sortie libre'}`;
   }
   if (mode === 'cricket') return 'Cricket';
+  if (mode === 'training') return `Entraînement · ${DRILLS[(state as TrainingState).config.drill].label}`;
   return mode === 'doubles' ? 'Doubles' : 'Horloge';
 }
 
@@ -96,6 +110,10 @@ export function makeEngine(initial: AnyState): Engine {
         const bits = [ev.marks ? `${ev.marks} marque${ev.marks > 1 ? 's' : ''}` : '', ev.points ? `${ev.points} pts` : ''].filter(Boolean);
         return { over: ev.over, used: ev.used, finished: ev.finished, bust: false, total: bits.join(' · ') || '0' };
       }
+      if (e.mode === 'training') {
+        const ev = evaluateTraining(e.state as TrainingState, darts);
+        return { over: ev.over, used: ev.used, finished: ev.finished, bust: ev.points < 0, total: ev.points > 0 ? `+${ev.points}` : String(ev.points) };
+      }
       const ev = evaluateSequence(e.state as SequenceState, darts);
       return { over: ev.over, used: ev.used, finished: ev.finished, bust: false, total: ev.hits ? `+${ev.hits}` : '0' };
     },
@@ -103,12 +121,14 @@ export function makeEngine(initial: AnyState): Engine {
     commit(darts) {
       if (e.mode === 'x01') e.state = commitTurn(e.state as GameState, darts);
       else if (e.mode === 'cricket') e.state = commitCricket(e.state as CricketState, darts);
+      else if (e.mode === 'training') e.state = commitTraining(e.state as TrainingState, darts);
       else e.state = commitSequence(e.state as SequenceState, darts);
     },
 
     undo() {
       if (e.mode === 'x01') e.state = undoTurn(e.state as GameState);
       else if (e.mode === 'cricket') e.state = undoCricket(e.state as CricketState);
+      else if (e.mode === 'training') e.state = undoTraining(e.state as TrainingState);
       else e.state = undoSequence(e.state as SequenceState);
     },
 
@@ -124,6 +144,10 @@ export function makeEngine(initial: AnyState): Engine {
         const t = last as CricketState['turns'][number];
         return [t.marks ? `${t.marks} marque${t.marks > 1 ? 's' : ''}` : '', t.points ? `${t.points} pts` : ''].filter(Boolean).join(' · ') || '0';
       }
+      if (e.mode === 'training') {
+        const t = last as TrainingState['turns'][number];
+        return t.points > 0 ? `+${t.points}` : String(t.points);
+      }
       const t = last as SequenceState['turns'][number];
       return t.hits ? `+${t.hits}` : '0';
     },
@@ -138,6 +162,13 @@ export function makeEngine(initial: AnyState): Engine {
       if (e.mode === 'cricket') {
         const pts = cricketStats(e.state as CricketState)[e.current].points;
         return solo ? `${pts} points.` : `À ${name}, ${pts} points.`;
+      }
+      if (e.mode === 'training') {
+        const s = e.state as TrainingState;
+        const st = standing(s);
+        const cible = drillTarget(s.config.drill, st.round[e.current]).libelle;
+        const score = st.score[e.current];
+        return solo ? `${score} points. Vise le ${cible}.` : `À ${name}, ${score} points, vise le ${cible}.`;
       }
       const s = e.state as SequenceState;
       const cible = targetAt(s.config.kind, progress(s)[e.current]).libelle;
@@ -155,6 +186,12 @@ export function makeEngine(initial: AnyState): Engine {
         return {
           head: ['Joueur', 'Points', 'Marques', 'Par volée'],
           rows: cricketStats(e.state as CricketState).map((p) => [p.name, String(p.points), String(p.marks), fmt1(p.rate)]),
+        };
+      }
+      if (e.mode === 'training') {
+        return {
+          head: ['Joueur', 'Score', 'Volées', 'Par volée'],
+          rows: trainingStats(e.state as TrainingState).map((p) => [p.name, String(p.score), String(p.rounds), fmt1(p.perRound)]),
         };
       }
       return {
@@ -194,6 +231,15 @@ export function makeEngine(initial: AnyState): Engine {
           players: cricketStats(e.state as CricketState).map((p, i) => ({ name: p.name, result: `${p.points} pts`, darts: p.darts, won: i === winner })),
         };
       }
+      if (e.mode === 'training') {
+        return {
+          at,
+          mode: 'training',
+          label: e.label,
+          ms,
+          players: trainingStats(e.state as TrainingState).map((p, i) => ({ name: p.name, result: `${p.score}`, darts: p.darts, won: i === winner, scored: p.score })),
+        };
+      }
       return {
         at,
         mode: e.mode,
@@ -216,6 +262,9 @@ export function summaryLines(state: AnyState): { name: string; value: string }[]
   if (mode === 'cricket') {
     return cricketStats(state as CricketState).map((p) => ({ name: p.name, value: `${p.points}` }));
   }
+  if (mode === 'training') {
+    return trainingStats(state as TrainingState).map((p) => ({ name: p.name, value: `${p.score}` }));
+  }
   return sequenceStats(state as SequenceState).map((p) => ({ name: p.name, value: `${p.index}/20` }));
 }
 
@@ -226,9 +275,12 @@ export interface AnyConfig {
   /** X01 seulement. */
   start: 301 | 501;
   doubleOut: boolean;
+  /** Entraînement seulement : l'exercice choisi. */
+  drill: DrillKind;
 }
 
 export function newState(c: AnyConfig): AnyState {
+  if (c.mode === 'training') return newTraining({ drill: c.drill, players: c.players });
   if (c.mode === 'cricket') return newCricket({ players: c.players });
   if (c.mode === 'horloge' || c.mode === 'doubles') return newSequence({ kind: c.mode, players: c.players });
   return newGame({ start: c.start, doubleOut: c.doubleOut, players: c.players } satisfies GameConfig);

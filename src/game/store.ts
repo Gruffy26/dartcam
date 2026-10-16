@@ -37,7 +37,7 @@ export function saveLastConfig(c: AnyConfig): void {
   saveJSON(CONFIG_KEY, c);
 }
 
-const DEFAULT_CONFIG: AnyConfig = { mode: 'x01', start: 501, doubleOut: true, players: ['Joueur 1'] };
+const DEFAULT_CONFIG: AnyConfig = { mode: 'x01', start: 501, doubleOut: true, drill: 'scoring', players: ['Joueur 1'] };
 
 export function lastConfig(): AnyConfig {
   const c = loadJSON<Partial<AnyConfig>>(CONFIG_KEY, {});

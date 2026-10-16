@@ -6,6 +6,7 @@ import { suggestCheckout } from '../game/checkout';
 import { CRICKET_TARGETS, evaluateCricket, MARKS_TO_OPEN, type CricketState } from '../game/cricket';
 import type { Engine } from '../game/engine';
 import { evaluateSequence, progress, SEQUENCE_LENGTH, targetAt, type SequenceState } from '../game/sequence';
+import { DRILLS, drillTarget, evaluateTraining, standing, type TrainingState } from '../game/training';
 import { evaluateTurn, playerStats, remainingScores, type GameState } from '../game/x01';
 import { h } from '../dom';
 
@@ -15,6 +16,7 @@ const fmt1 = (v: number) => v.toFixed(1).replace('.', ',');
 export function renderScores(el: HTMLElement, engine: Engine, pending: Score[]): void {
   if (engine.mode === 'x01') el.replaceChildren(...x01Board(engine.state as GameState, pending));
   else if (engine.mode === 'cricket') el.replaceChildren(cricketBoardEl(engine.state as CricketState, pending));
+  else if (engine.mode === 'training') el.replaceChildren(...trainingBoard(engine.state as TrainingState, pending));
   else el.replaceChildren(...sequenceBoard(engine.state as SequenceState, pending));
 }
 
@@ -30,6 +32,7 @@ export function stripText(engine: Engine, pending: Score[]): string {
     const ev = evaluateCricket(engine.state as CricketState, pending);
     return `${ev.board.points[engine.current]} pts`;
   }
+  if (engine.mode === 'training') return String(evaluateTraining(engine.state as TrainingState, pending).score);
   const s = engine.state as SequenceState;
   return `${evaluateSequence(s, pending).index}/${SEQUENCE_LENGTH}`;
 }
@@ -102,6 +105,47 @@ function cricketBoardEl(s: CricketState, pending: Score[]): HTMLElement {
     grid.append(h('span', { class: 'cri-points' + (p === s.current ? ' on' : '') }, String(board.points[p])));
   }
   return grid;
+}
+
+// --- Entraînement ----------------------------------------------------------
+function trainingBoard(s: TrainingState, pending: Score[]): HTMLElement[] {
+  const drill = DRILLS[s.config.drill];
+  const st = standing(s);
+  const cur = s.current;
+  const ev = evaluateTraining(s, pending);
+  const done = st.round[cur];
+  const target = drillTarget(s.config.drill, done);
+  const active = h(
+    'div',
+    { class: 'active-card' },
+    h(
+      'div',
+      { class: 'active-head' },
+      h('span', { class: 'active-name' }, s.config.players[cur]),
+      h('span', { class: 'active-avg' }, `volée ${Math.min(done + 1, drill.rounds)}/${drill.rounds}`),
+    ),
+    h('div', { class: 'active-remaining' + (ev.score < 0 ? ' bust' : '') }, String(ev.score)),
+    h('div', { class: 'checkout' }, `Vise le ${target.libelle}`),
+    h(
+      'div',
+      { class: 'seq-track' },
+      ...Array.from({ length: drill.rounds }, (_, i) => h('i', { class: 'seq-dot' + (i < done ? ' on' : '') + (i === done ? ' next' : '') })),
+    ),
+  );
+  const others =
+    s.config.players.length > 1
+      ? h(
+          'div',
+          { class: 'others' },
+          ...s.config.players
+            .map((name, i) => ({ name, i }))
+            .filter(({ i }) => i !== cur)
+            .map(({ name, i }) =>
+              h('div', { class: 'other' }, h('span', { class: 'other-name' }, name), h('span', { class: 'other-rem' }, String(st.score[i]))),
+            ),
+        )
+      : null;
+  return others ? [active, others] : [active];
 }
 
 // --- Horloge et doubles ----------------------------------------------------

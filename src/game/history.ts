@@ -10,7 +10,7 @@ const KEY = 'dartcam.history';
 /** Au-delà, les plus anciennes parties sont oubliées. */
 export const MAX_GAMES = 200;
 
-export type GameMode = 'x01' | 'cricket' | 'horloge' | 'doubles';
+export type GameMode = 'x01' | 'cricket' | 'horloge' | 'doubles' | 'training';
 
 export interface HistoryPlayer {
   name: string;
@@ -56,6 +56,44 @@ export interface PlayerTotals {
   average: number;
   /** Meilleure volée en X01. */
   best: number;
+}
+
+export interface DrillProgress {
+  label: string;
+  count: number;
+  /** Meilleur score obtenu, et par qui. */
+  bestName: string;
+  best: number;
+  /** Score de la dernière séance. */
+  last: number;
+  lastName: string;
+}
+
+/**
+ * Progression par exercice d'entraînement : le record et la dernière séance.
+ * C'est le tableau qu'on regarde pour savoir si l'on progresse vraiment.
+ */
+export function trainingProgress(games = history()): DrillProgress[] {
+  const by = new Map<string, DrillProgress>();
+  // `history()` rend les parties de la plus récente à la plus ancienne.
+  for (const g of games) {
+    if (g.mode !== 'training') continue;
+    for (const p of g.players) {
+      const score = p.scored ?? Number(p.result);
+      if (!Number.isFinite(score)) continue;
+      const cur = by.get(g.label);
+      if (!cur) {
+        by.set(g.label, { label: g.label, count: 1, best: score, bestName: p.name, last: score, lastName: p.name });
+      } else {
+        cur.count++;
+        if (score > cur.best) {
+          cur.best = score;
+          cur.bestName = p.name;
+        }
+      }
+    }
+  }
+  return [...by.values()];
 }
 
 /** Cumul par joueur, tous modes confondus (la moyenne ne compte que le X01). */

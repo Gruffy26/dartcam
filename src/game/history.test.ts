@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { addGame, clearHistory, history, MAX_GAMES, totals, type GameRecord } from './history';
+import { addGame, clearHistory, history, MAX_GAMES, totals, trainingProgress, type GameRecord } from './history';
 
 function fakeStorage(): Storage {
   const m = new Map<string, string>();
@@ -71,5 +71,30 @@ describe('historique', () => {
   it('ignore un contenu abîmé', () => {
     localStorage.setItem('dartcam.history', '{"pas":"un tableau"}');
     expect(history()).toEqual([]);
+  });
+});
+
+describe('progression à l’entraînement', () => {
+  beforeEach(() => vi.stubGlobal('localStorage', fakeStorage()));
+
+  const drill = (label: string, score: number, at: string) =>
+    addGame({ at, mode: 'training', label, players: [{ name: 'Leo', result: String(score), darts: 30, won: true, scored: score }] });
+
+  it('garde le record et la dernière séance de chaque exercice', () => {
+    drill('Entraînement · Scoring 20', 300, 'A');
+    drill('Entraînement · Scoring 20', 412, 'B');
+    drill('Entraînement · Scoring 20', 350, 'C'); // la plus récente
+    drill('Entraînement · Bob 27', 99, 'D');
+    const p = trainingProgress();
+    const scoring = p.find((x) => x.label.includes('Scoring'))!;
+    expect(scoring.count).toBe(3);
+    expect(scoring.best).toBe(412);
+    expect(scoring.last).toBe(350);
+    expect(p).toHaveLength(2);
+  });
+
+  it('ignore les parties qui ne sont pas de l’entraînement', () => {
+    addGame(game());
+    expect(trainingProgress()).toEqual([]);
   });
 });
