@@ -30,8 +30,10 @@ import { Volley, type DartRecord } from '../volley';
 import { addVolley } from '../dataset';
 import { openCorrection } from './correct';
 
-/** Largeur des images analysées : assez pour viser, assez léger pour l'iPhone. */
-export const ANALYSIS_WIDTH = 640;
+/** Largeur de repli si le téléphone n'arrive pas à suivre la largeur demandée. */
+export const FALLBACK_WIDTH = 640;
+/** Au-delà de ce temps d'analyse moyen, on redescend d'un cran. */
+const SLOW_MS = 85;
 const ANALYSIS_INTERVAL_MS = 100; // ≈10 analyses par seconde
 
 type StatusKind = 'info' | 'ready' | 'wait' | 'alert';
@@ -527,13 +529,18 @@ export function gameScreen(nav: Nav): Screen {
   }
 
   // --- Analyse des images -------------------------------------------------
+  /** Largeur d'analyse en cours (réglable, avec repli automatique). */
+  let analysisWidth = Math.max(320, Math.round(getSettings().analysisWidth));
+  /** Temps d'analyse des dernières images, pour décider du repli. */
+  const times: number[] = [];
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 
   function grab(f: FrameInfo): ImageData | null {
     const v = cam.source?.video;
     if (!v) return null;
-    const w = ANALYSIS_WIDTH;
+    // Inutile d'agrandir au-delà de ce que la caméra fournit réellement.
+    const w = Math.min(analysisWidth, Math.round(f.crop.w));
     const hh = Math.round((f.crop.h * w) / f.crop.w);
     if (canvas.width !== w || canvas.height !== hh) {
       canvas.width = w;
@@ -582,6 +589,19 @@ export function gameScreen(nav: Nav): Screen {
     if (wantStart && !volley.darts.length && detector?.settled) {
       startShot = { img, f2b: detector.frameToBoard };
       wantStart = false;
+    }
+    // Trop lent pour ce téléphone : on redescend une fois, sans rien demander.
+    if (analysisWidth > FALLBACK_WIDTH) {
+      times.push(detector.debug.processMs);
+      if (times.length >= 20) {
+        const median = [...times].sort((a, b) => a - b)[times.length >> 1];
+        times.length = 0;
+        if (median > SLOW_MS) {
+          analysisWidth = FALLBACK_WIDTH;
+          dropDetector();
+          setStatus('Analyse allégée : ce téléphone ne suivait pas en haute précision', 'info');
+        }
+      }
     }
     if (debugMode) updateDebug();
 

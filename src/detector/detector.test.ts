@@ -88,3 +88,31 @@ describe('détecteur sur une vidéo de synthèse', () => {
     det.dispose();
   }, 120000);
 });
+
+describe('détecteur en haute précision', () => {
+  // Les réglages exprimés en pixels suivent la largeur d'analyse : une image deux fois
+  // plus large doit donner les mêmes scores, pas des fléchettes rejetées.
+  it('trouve les mêmes fléchettes sur une image deux fois plus large', async () => {
+    const cv = await loadCvForTests();
+    const W2 = 960;
+    const H2 = 1708;
+    const POSE: CameraPose = { yawDeg: -29, pitchDeg: -12, distance: 900, focal: 1500, width: W2, height: H2 };
+    const tips = [
+      boardPoint(103, sectorCenterAngle(20)),
+      boardPoint(166, sectorCenterAngle(16)),
+      boardPoint(60, sectorCenterAngle(5)),
+    ];
+    const frame = (n: number) =>
+      renderBoard(cameraHomography(POSE), W2, H2, { seed: 5, noise: 4, extra: dartsPainter(POSE, tips.slice(0, n)) });
+    const cal = autoCalibrate(cv, frame(0));
+    if (!cal.ok) throw new Error(cal.reason);
+    const det = new DartDetector(cv, { frameToBoard: cal.H, width: W2, height: H2 });
+    const events: DetectorEvent[] = [];
+    let t = 0;
+    for (let n = 0; n <= 3; n++) {
+      for (let k = 0; k < (n === 0 ? 16 : 10); k++, t += 100) events.push(...det.process(frame(n), t));
+    }
+    expect(events.flatMap((e) => (e.kind === 'dart' ? [e.score.libelle] : []))).toEqual(['T20', 'D16', '5']);
+    det.dispose();
+  }, 180000);
+});

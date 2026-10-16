@@ -14,10 +14,17 @@ export interface Settings {
   voice: boolean;
   /** Garde les images des fléchettes sur le téléphone, pour améliorer la détection. */
   collect: boolean;
+  /**
+   * Largeur des images analysées (px). C'est le réglage qui pèse le plus sur la justesse
+   * des scores : rejouées en 320 px, de vraies parties tombent de 93 % à 83 % de bons
+   * scores. Plus large = plus juste, mais plus lourd pour le téléphone ; l'app redescend
+   * toute seule si elle n'arrive pas à suivre.
+   */
+  analysisWidth: number;
 }
 
 const KEY = 'dartcam.settings';
-const DEFAULTS: Settings = { source: 'camera', zoom: 1, debug: false, detector: DEFAULT_PARAMS, voice: true, collect: true };
+const DEFAULTS: Settings = { source: 'camera', zoom: 1, debug: false, detector: DEFAULT_PARAMS, voice: true, collect: true, analysisWidth: 960 };
 
 export function getSettings(): Settings {
   const saved = loadJSON<Partial<Settings>>(KEY, {});

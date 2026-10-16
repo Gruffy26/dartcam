@@ -92,6 +92,23 @@ export function settingsScreen(nav: Nav): HTMLElement {
       row('Annonce vocale', 'Score de chaque volée à voix haute', toggle(s.voice, (v) => updateSettings({ voice: v }), 'Annonce vocale')),
     ),
     group(
+      'Précision de l’analyse',
+      segmented(
+        [
+          { value: '640', label: 'Normale' },
+          { value: '960', label: 'Élevée' },
+          { value: '1280', label: 'Maximale' },
+        ],
+        String(s.analysisWidth),
+        (v) => updateSettings({ analysisWidth: Number(v) }),
+      ),
+      row(
+        'Plus large, plus juste',
+        'C’est le réglage qui pèse le plus sur la justesse des scores, sans jamais dépasser ce que la caméra fournit. Si le téléphone ne suit pas, l’app redescend toute seule pendant la partie.',
+        null,
+      ),
+    ),
+    group(
       'Détection',
       row('Mode debug', 'Masque, fléchette trouvée, vue de face, mesures', toggle(s.debug, (v) => updateSettings({ debug: v }), 'Mode debug')),
       advRow,

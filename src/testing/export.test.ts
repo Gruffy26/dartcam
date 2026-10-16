@@ -32,6 +32,44 @@ interface Meta {
 const dir = process.env.EXPORT;
 const run = dir && existsSync(join(dir, 'flechettes.json')) ? describe : describe.skip;
 
+/**
+ * Réduit l'image d'un facteur `k` (moyenne de blocs k×k) : sert à mesurer ce que la
+ * résolution d'analyse apporte vraiment à la précision du score.
+ */
+function shrink(im: { data: Uint8ClampedArray; width: number; height: number }, k: number) {
+  if (k === 1) return im;
+  const w = Math.floor(im.width / k);
+  const h = Math.floor(im.height / k);
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const acc = [0, 0, 0];
+      let n = 0;
+      for (let dy = 0; dy < k; dy++) {
+        for (let dx = 0; dx < k; dx++) {
+          const p = ((y * k + dy) * im.width + x * k + dx) * 4;
+          acc[0] += im.data[p];
+          acc[1] += im.data[p + 1];
+          acc[2] += im.data[p + 2];
+          n++;
+        }
+      }
+      const o = (y * w + x) * 4;
+      out[o] = acc[0] / n;
+      out[o + 1] = acc[1] / n;
+      out[o + 2] = acc[2] / n;
+      out[o + 3] = 255;
+    }
+  }
+  return { data: out, width: w, height: h };
+}
+
+/** Homographie image → cible quand l'image est réduite d'un facteur `k`. */
+function scaleH(H: Mat3, k: number): Mat3 {
+  if (k === 1) return H;
+  return [H[0] * k, H[1] * k, H[2], H[3] * k, H[4] * k, H[5], H[6] * k, H[7] * k, H[8]];
+}
+
 function bmpOf(m: Meta): string {
   return join(dir!, 'images', m.image!.replace(/\.jpg$/, '.bmp'));
 }
@@ -48,6 +86,7 @@ run('exports de l’app', () => {
       volleys.set(m.volley, list);
     }
 
+    const reduce = Number(process.env.SCALE ?? 1);
     const inMm = !!process.env.SWEEP_MM;
     const sweep = ((inMm ? process.env.SWEEP_MM : process.env.SWEEP) ?? '').split(',').filter(Boolean).map(Number);
     /** mm par pixel de l'image analysée, au centre de la cible. */
@@ -70,11 +109,11 @@ run('exports de l’app', () => {
         if (cur.index === 0) continue; // image de référence d'avant la volée
         if (cur.origin !== 'auto' && !process.env.MANUAL) continue; // ajoutée à la main
         if (cur.origin === 'miss') continue;
-        const ref = readBmp(bmpOf(prev));
-        const img = readBmp(bmpOf(cur));
+        const ref = shrink(readBmp(bmpOf(prev)), reduce);
+        const img = shrink(readBmp(bmpOf(cur)), reduce);
         if (inMm) TIP.blurPx = blur / scaleOf(cur.f2b!);
         const det = new DartDetector(cv, {
-          frameToBoard: cur.f2b!,
+          frameToBoard: scaleH(cur.f2b!, reduce),
           width: img.width,
           height: img.height,
           zoom: cur.calib?.zoom,

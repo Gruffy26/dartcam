@@ -308,6 +308,14 @@ export class DartDetector {
   }
 
   /** Image de référence actuelle (niveaux de gris floutés), pour la comparer à une autre. */
+  /**
+   * Facteur d'échelle des réglages exprimés en pixels : ils ont été calibrés sur des
+   * images de 640 px de large, et doivent suivre si l'analyse tourne plus finement.
+   */
+  private get px(): number {
+    return this.calib.width / 640;
+  }
+
   private get minArea() {
     return (this.boardArea * this.params.minAreaPermille) / 1000;
   }
@@ -402,7 +410,7 @@ export class DartDetector {
       this.debug.shift = { x: 0, y: 0 };
       return planes;
     }
-    const s = estimateShift(this.anchor, gray.data, 16);
+    const s = estimateShift(this.anchor, gray.data, Math.round(16 * this.px));
     this.debug.shift = { x: s.x, y: s.y };
     // Vibrations (le décalage va et vient) : compensées par le recalage.
     // Déplacement (le décalage reste stable à plus de 4 px pendant 1 s) : le téléphone
@@ -415,7 +423,7 @@ export class DartDetector {
     const sd = Math.sqrt(this.shifts.reduce((a, p) => a + (p.x - mxs) ** 2 + (p.y - mys) ** 2, 0) / k);
     const spanned = t - this.shifts[0].t >= 800;
     const offset = Math.hypot(mxs, mys);
-    this.shifted = offset > 4 && sd < Math.max(1.5, offset * 0.4);
+    this.shifted = offset > 4 * this.px && sd < Math.max(1.5 * this.px, offset * 0.4);
     if (this.shifted && spanned) {
       events.push({ kind: 'moved', shift: { x: mxs, y: mys } });
       this.shifts = [];
@@ -633,7 +641,7 @@ export class DartDetector {
     let xy: number[];
     let used: number[];
     if (outDir) {
-      const g = gatherNear(mainXy, others, 90);
+      const g = gatherNear(mainXy, others, 90 * this.px);
       xy = g.xy;
       used = g.labels;
     } else {
@@ -655,14 +663,23 @@ export class DartDetector {
     const shape = dartShape(xy, tip);
     this.debug.shape = { ...shape, lengthRatio: expected ? tip.length / expected : 0 };
     if (expected > 0 && (tip.length < expected * 0.3 || tip.length > expected * 2.2)) return { used, area, reason: 'no-tip' };
-    if (shape.straight < 0.15 || shape.width > Math.max(14, tip.length * 0.6)) return { used, area, reason: "no-tip" };
+    if (shape.straight < 0.15 || shape.width > Math.max(14 * this.px, tip.length * 0.6)) return { used, area, reason: "no-tip" };
 
     // Le bout du fût est souvent peu contrasté : on prolonge avec un seuil plus bas.
     // Couleur incluse : un fût gris reste visible quand il traverse un anneau rouge ou vert.
-    const ext = extendTip(tip.tip, tip.axis, absdM.data, absdM.cols, absdM.rows, Math.max(6, this.params.diffThreshold * 0.45), 60, 8);
+    const ext = extendTip(
+      tip.tip,
+      tip.axis,
+      absdM.data,
+      absdM.cols,
+      absdM.rows,
+      Math.max(6, this.params.diffThreshold * 0.45),
+      60 * this.px,
+      Math.round(8 * this.px),
+    );
     if (radius(ext.tip) <= RADII.doubleOuter + 40) tip.tip = ext.tip;
     // Le flou (5×5) étale le changement ≈ 1,5 px au-delà du vrai bout : on le retire.
-    tip.tip = { x: tip.tip.x + tip.axis.x * TIP.blurPx, y: tip.tip.y + tip.axis.y * TIP.blurPx };
+    tip.tip = { x: tip.tip.x + tip.axis.x * TIP.blurPx * this.px, y: tip.tip.y + tip.axis.y * TIP.blurPx * this.px };
     this.debug.contour = xy;
     this.debug.tip = tip;
 
