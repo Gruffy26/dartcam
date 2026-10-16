@@ -323,3 +323,50 @@ run('exports de l’app — position de la caméra', () => {
     }
   }, 300000);
 });
+
+run('exports de l’app — coût de l’analyse', () => {
+  it.skipIf(!process.env.COST)('mesure le temps passé image par image', async () => {
+    const cv = await loadCvForTests();
+    const metas: Meta[] = JSON.parse(readFileSync(join(dir!, 'flechettes.json'), 'utf8'));
+    const first = metas.find((m) => m.index === 1 && m.f2b && existsSync(bmpOf(m)))!;
+    const prev = metas.find((m) => m.volley === first.volley && m.index === 0)!;
+    const scale = Number(process.env.SCALE2 ?? 1);
+    const grow = (im: { data: Uint8ClampedArray; width: number; height: number }) => {
+      if (scale === 1) return im;
+      const w = Math.round(im.width * scale);
+      const h = Math.round(im.height * scale);
+      const out = new Uint8ClampedArray(w * h * 4);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const s = (Math.min(im.height - 1, Math.floor(y / scale)) * im.width + Math.min(im.width - 1, Math.floor(x / scale))) * 4;
+          const o = (y * w + x) * 4;
+          out[o] = im.data[s];
+          out[o + 1] = im.data[s + 1];
+          out[o + 2] = im.data[s + 2];
+          out[o + 3] = 255;
+        }
+      }
+      return { data: out, width: w, height: h };
+    };
+    const ref = grow(readBmp(bmpOf(prev)));
+    const img = grow(readBmp(bmpOf(first)));
+    const H = first.f2b!;
+    const F2B: Mat3 = [H[0] / scale, H[1] / scale, H[2], H[3] / scale, H[4] / scale, H[5], H[6] / scale, H[7] / scale, H[8]];
+    const det = new DartDetector(cv, { frameToBoard: F2B, width: ref.width, height: ref.height });
+    let t = 0;
+    for (let i = 0; i < 10; i++, t += 100) det.process(ref, t);
+    const idle: number[] = [];
+    for (let i = 0; i < 20; i++, t += 100) {
+      det.process(ref, t);
+      idle.push(det.debug.processMs);
+    }
+    const busy: number[] = [];
+    for (let i = 0; i < 10; i++, t += 100) {
+      det.process(img, t);
+      busy.push(det.debug.processMs);
+    }
+    const med = (v: number[]) => [...v].sort((a, b) => a - b)[v.length >> 1];
+    console.log(`${ref.width}×${ref.height} : repos ${med(idle).toFixed(1)} ms, avec fléchette ${med(busy).toFixed(1)} ms (pire ${Math.max(...busy).toFixed(0)} ms)`);
+    det.dispose();
+  }, 300000);
+});

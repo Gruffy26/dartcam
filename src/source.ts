@@ -39,7 +39,14 @@ export async function openCamera(initialZoom = 1): Promise<FrameSource> {
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      // 15 images par seconde suffisent largement : l'app en analyse au plus 10, et la
+      // caméra consomme moins. La résolution, elle, fait la précision des scores.
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 15, max: 30 },
+      },
     });
   } catch (e) {
     throw new SourceError(cameraErrorMessage(e));

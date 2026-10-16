@@ -34,7 +34,14 @@ import { openCorrection } from './correct';
 export const FALLBACK_WIDTH = 640;
 /** Au-delà de ce temps d'analyse moyen, on redescend d'un cran. */
 const SLOW_MS = 85;
-const ANALYSIS_INTERVAL_MS = 100; // ≈10 analyses par seconde
+/** Cadence d'analyse quand quelque chose se passe (≈10 images par seconde). */
+const ACTIVE_INTERVAL_MS = 100;
+/**
+ * Cadence au repos. Entre deux lancers il ne se passe rien : analyser dix fois par
+ * seconde ne sert qu'à chauffer le téléphone. Dès qu'une image bouge, on repasse à la
+ * cadence pleine, et la fléchette n'est de toute façon mesurée qu'une fois immobile.
+ */
+const IDLE_INTERVAL_MS = 320;
 
 type StatusKind = 'info' | 'ready' | 'wait' | 'alert';
 
@@ -174,6 +181,7 @@ export function gameScreen(nav: Nav): Screen {
 
   function useCalibration(c: Calibration) {
     cal = c;
+    scheduleDraw();
     dropDetector();
     // Exposition / balance des blancs bloquées si possible (luminosité stable).
     void cam.source?.lock().then((info) => (lockInfo = info));
@@ -187,6 +195,7 @@ export function gameScreen(nav: Nav): Screen {
   let zoomTimer = 0;
   cam.enablePinch(overlay);
   cam.onChange((reason) => {
+    scheduleDraw();
     if (reason === 'pinch') return;
     if (reason === 'zoom') {
       cal = null;
@@ -242,6 +251,7 @@ export function gameScreen(nav: Nav): Screen {
     }
     persist();
     render();
+    scheduleDraw();
   }
 
   function onDart(ev: DartEvent, img: ImageData) {
@@ -533,6 +543,8 @@ export function gameScreen(nav: Nav): Screen {
   let analysisWidth = Math.max(320, Math.round(getSettings().analysisWidth));
   /** Temps d'analyse des dernières images, pour décider du repli. */
   const times: number[] = [];
+  /** Dernier événement du détecteur : on reste réactif juste après. */
+  let lastEventAt = 0;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 
@@ -551,6 +563,8 @@ export function gameScreen(nav: Nav): Screen {
   }
 
   function analyse() {
+    // Partie gagnée : plus rien à détecter tant qu'on n'a pas relancé une partie.
+    if (game.winner != null) return;
     const f = cam.frame();
     if (!f || !cal || !cv) return;
     const img = grab(f);
@@ -566,6 +580,7 @@ export function gameScreen(nav: Nav): Screen {
       if (turnOver() || game.winner != null) detector.setMode('removal');
     }
     const events = detector.process(img, performance.now());
+    if (events.length) lastEventAt = performance.now();
     for (const ev of events) {
       if (ev.kind === 'dart') onDart(ev, img);
       else if (ev.kind === 'cleared' && game.winner == null) {
@@ -604,6 +619,7 @@ export function gameScreen(nav: Nav): Screen {
       }
     }
     if (debugMode) updateDebug();
+    scheduleDraw();
 
     frames++;
     const now = performance.now();
@@ -614,13 +630,30 @@ export function gameScreen(nav: Nav): Screen {
     }
   }
 
+  /** Cadence de la prochaine analyse : pleine s'il se passe quelque chose, sinon lente. */
+  function nextInterval(): number {
+    if (!detector || !cal) return ACTIVE_INTERVAL_MS;
+    // Mouvement en cours, ou mouvement vu mais pas encore analysé : on reste réactif.
+    if (detector.debug.state === 'moving' || !detector.settled) return ACTIVE_INTERVAL_MS;
+    if (performance.now() - lastEventAt < 1500) return ACTIVE_INTERVAL_MS;
+    return IDLE_INTERVAL_MS;
+  }
+
   // --- Dessin sur l'aperçu caméra -----------------------------------------
   function toScreen(f: FrameInfo, p: Pt): Pt {
     return frameToScreen(f.screen, { x: p.x / detSize.w, y: p.y / detSize.h });
   }
 
+  /** Redessine une fois, à la prochaine image de l'écran (sans boucle permanente). */
+  function scheduleDraw() {
+    if (raf || disposed) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      draw();
+    });
+  }
+
   function draw() {
-    raf = requestAnimationFrame(draw);
     const c = fitCanvas(overlay, cam.el.clientWidth, cam.el.clientHeight);
     const f = cam.frame();
     if (!f || !cal) return;
@@ -717,7 +750,7 @@ export function gameScreen(nav: Nav): Screen {
         setStatus(`Erreur d’analyse : ${String(e)}`, 'alert');
       }
       const spent = performance.now() - start;
-      timer = window.setTimeout(loop, Math.max(10, ANALYSIS_INTERVAL_MS - spent));
+      timer = window.setTimeout(loop, Math.max(10, nextInterval() - spent));
     };
     loop();
   });
@@ -731,12 +764,16 @@ export function gameScreen(nav: Nav): Screen {
     announced = `${ev.bust}:${ev.finished}:${ev.scored}`;
     afterChange();
   }
-  draw();
+  scheduleDraw();
+  // L'aperçu change aussi quand la mise en page bouge (caméra agrandie, rotation).
+  const ro = new ResizeObserver(() => scheduleDraw());
+  ro.observe(cam.el);
 
   return {
     el,
     dispose() {
       disposed = true;
+      ro.disconnect();
       clearTimeout(timer);
       clearTimeout(zoomTimer);
       cancelAnimationFrame(raf);
