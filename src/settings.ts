@@ -12,6 +12,8 @@ export interface Settings {
   detector: DetectorParams;
   /** Annonce vocale du score de chaque volée. */
   voice: boolean;
+  /** Petits sons de confirmation à chaque fléchette comptée. */
+  sounds: boolean;
   /** Garde les images des fléchettes sur le téléphone, pour améliorer la détection. */
   collect: boolean;
   /**
@@ -24,7 +26,7 @@ export interface Settings {
 }
 
 const KEY = 'dartcam.settings';
-const DEFAULTS: Settings = { source: 'camera', zoom: 1, debug: false, detector: DEFAULT_PARAMS, voice: true, collect: true, analysisWidth: 960 };
+const DEFAULTS: Settings = { source: 'camera', zoom: 1, debug: false, detector: DEFAULT_PARAMS, voice: true, sounds: true, collect: false, analysisWidth: 960 };
 
 export function getSettings(): Settings {
   const saved = loadJSON<Partial<Settings>>(KEY, {});

@@ -4,6 +4,8 @@
 // - Bust : score négatif, ou (double out) score de 1, ou 0 atteint sans finir sur un
 //   double (ou le bull) → la volée s'arrête et le score revient à celui du début de la volée.
 // - Victoire : atteindre exactement 0 (sur un double si « double out »).
+// - Match : on peut jouer en plusieurs manches (« premier à N »). Chaque manche repart
+//   du score de départ, et c'est l'autre joueur qui commence la suivante.
 
 import type { Score } from '../board';
 
@@ -11,6 +13,8 @@ export interface GameConfig {
   start: 301 | 501;
   doubleOut: boolean;
   players: string[];
+  /** Manches à gagner pour remporter le match (1 = une seule manche). */
+  legs?: number;
 }
 
 export interface Turn {
@@ -27,11 +31,33 @@ export interface Turn {
 export interface GameState {
   version: 1;
   config: GameConfig;
+  /** Volées de la manche en cours. */
   turns: Turn[];
+  /** Volées des manches déjà gagnées (pour les statistiques du match). */
+  past?: Turn[][];
+  /** Manches gagnées par chaque joueur. */
+  legsWon?: number[];
+  /** Joueur qui a commencé la manche en cours. */
+  startPlayer?: number;
   /** Joueur dont c'est le tour. */
   current: number;
   winner: number | null;
   startedAt: string;
+}
+
+/** Manches à gagner (1 par défaut, y compris pour les parties d'avant cette option). */
+export function legsTarget(state: GameState): number {
+  return Math.max(1, state.config.legs ?? 1);
+}
+
+/** Manches gagnées par chaque joueur. */
+export function legsWon(state: GameState): number[] {
+  return state.legsWon ?? state.config.players.map(() => 0);
+}
+
+/** Toutes les volées du match, manches terminées comprises. */
+export function allTurns(state: GameState): Turn[] {
+  return [...(state.past ?? []).flat(), ...state.turns];
 }
 
 export interface TurnEval {
@@ -75,6 +101,9 @@ export function newGame(config: GameConfig): GameState {
     version: 1,
     config: { ...config, players },
     turns: [],
+    past: [],
+    legsWon: players.map(() => 0),
+    startPlayer: 0,
     current: 0,
     winner: null,
     startedAt: new Date().toISOString(),
@@ -102,24 +131,56 @@ export function commitTurn(state: GameState, darts: Score[]): GameState {
     finished: ev.finished,
   };
   const n = state.config.players.length;
+  const turns = [...state.turns, turn];
+  if (!ev.finished) return { ...state, turns, current: (state.current + 1) % n };
+
+  // Manche gagnée : match fini, ou manche suivante commencée par l'autre joueur.
+  const won = legsWon(state).map((w, i) => (i === state.current ? w + 1 : w));
+  if (won[state.current] >= legsTarget(state)) {
+    return { ...state, turns, legsWon: won, winner: state.current };
+  }
+  const nextStart = ((state.startPlayer ?? 0) + 1) % n;
   return {
     ...state,
-    turns: [...state.turns, turn],
-    winner: ev.finished ? state.current : null,
-    current: ev.finished ? state.current : (state.current + 1) % n,
+    turns: [],
+    past: [...(state.past ?? []), turns],
+    legsWon: won,
+    startPlayer: nextStart,
+    current: nextStart,
+    winner: null,
   };
 }
 
 /** Annule la dernière volée enregistrée (erreur de comptage). */
 export function undoTurn(state: GameState): GameState {
+  // Manche tout juste gagnée : on revient dans la manche précédente.
+  if (!state.turns.length && state.past?.length) {
+    const past = [...state.past];
+    const back = past.pop()!;
+    const last = back[back.length - 1];
+    const won = legsWon(state).map((w, i) => (i === last.player ? Math.max(0, w - 1) : w));
+    const n = state.config.players.length;
+    return {
+      ...state,
+      past,
+      turns: back.slice(0, -1),
+      legsWon: won,
+      startPlayer: ((state.startPlayer ?? 0) + n - 1) % n,
+      current: last.player,
+      winner: null,
+    };
+  }
   const last = state.turns[state.turns.length - 1];
   if (!last) return state;
-  return { ...state, turns: state.turns.slice(0, -1), current: last.player, winner: null };
+  const won = last.finished ? legsWon(state).map((w, i) => (i === last.player ? Math.max(0, w - 1) : w)) : legsWon(state);
+  return { ...state, turns: state.turns.slice(0, -1), legsWon: won, current: last.player, winner: null };
 }
 
 export interface PlayerStats {
   name: string;
   remaining: number;
+  /** Manches gagnées dans le match. */
+  legs: number;
   darts: number;
   /** Moyenne par volée de 3 fléchettes. */
   average: number;
@@ -128,12 +189,13 @@ export interface PlayerStats {
 
 export function playerStats(state: GameState): PlayerStats[] {
   const rem = remainingScores(state);
+  const all = allTurns(state);
   return state.config.players.map((name, i) => {
-    const turns = state.turns.filter((t) => t.player === i);
+    const turns = all.filter((t) => t.player === i);
     // Les fléchettes d'une volée « bust » comptent (règle usuelle des moyennes).
     const darts = turns.reduce((s, t) => s + (t.bust || t.finished ? t.darts.length : 3), 0);
     const scored = turns.reduce((s, t) => s + (t.before - t.after), 0);
     const best = turns.reduce((m, t) => Math.max(m, t.before - t.after), 0);
-    return { name, remaining: rem[i], darts, average: darts ? (scored / darts) * 3 : 0, best };
+    return { name, remaining: rem[i], legs: legsWon(state)[i], darts, average: darts ? (scored / darts) * 3 : 0, best };
   });
 }

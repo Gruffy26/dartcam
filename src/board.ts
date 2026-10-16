@@ -61,6 +61,22 @@ export function boardPoint(radius: number, angleFromTopDeg: number): { x: number
   return { x: radius * Math.sin(a), y: radius * Math.cos(a) };
 }
 
+/**
+ * Relit un score écrit (« T20 », « D16 », « 25 », « BULL », « 7 », « 0 »).
+ * Sert à ré-analyser les parties enregistrées, où seules les étiquettes sont gardées.
+ */
+export function parseScore(libelle: string): Score | null {
+  const s = libelle.trim().toUpperCase();
+  if (s === 'BULL') return makeScore(25, 2);
+  if (s === '25') return makeScore(25, 1);
+  if (s === '0') return MISS;
+  const m = /^([TD]?)(\d{1,2})$/.exec(s);
+  if (!m) return null;
+  const n = Number(m[2]);
+  if (n < 1 || n > 20) return null;
+  return makeScore(n, m[1] === 'T' ? 3 : m[1] === 'D' ? 2 : 1);
+}
+
 export function makeScore(secteur: number, multiplicateur: Multiplier): Score {
   if (multiplicateur === 0 || secteur === 0) return MISS;
   if (secteur === 25) {

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { makeScore, MISS } from '../board';
+import { suggestCheckout } from './checkout';
 import {
+  CHECKOUT_POOL,
+  checkoutTarget,
   commitTraining,
   drillOver,
   drillTarget,
@@ -107,5 +110,48 @@ describe('entraînement — commun', () => {
     expect(st[0].rounds).toBe(2);
     expect(st[0].darts).toBe(2);
     expect(st[0].perRound).toBe(40);
+  });
+});
+
+describe('entraînement — checkouts', () => {
+  const seeded = (seed: number) => newTraining({ drill: 'checkout', players: ['A'], seed });
+
+  it('propose un reste qui se ferme en trois fléchettes', () => {
+    for (let r = 0; r < 20; r++) {
+      const n = checkoutTarget(7, r);
+      expect(CHECKOUT_POOL).toContain(n);
+      expect(suggestCheckout(n, 3, true)).not.toBe(null);
+    }
+  });
+
+  it('rejoue les mêmes restes pour une même séance', () => {
+    expect(checkoutTarget(42, 3)).toBe(checkoutTarget(42, 3));
+    const a = Array.from({ length: 20 }, (_, r) => checkoutTarget(1, r));
+    const b = Array.from({ length: 20 }, (_, r) => checkoutTarget(2, r));
+    expect(a).not.toEqual(b);
+  });
+
+  it('compte un point quand le reste est fermé au double', () => {
+    const s = seeded(5);
+    const target = drillTarget('checkout', 0, 5).secteur;
+    const route = suggestCheckout(target, 3, true)!;
+    const after = commitTraining(s, route);
+    expect(standing(after).score[0]).toBe(1);
+    // La volée s'arrête sur la fléchette qui ferme.
+    expect(after.turns[0].darts).toHaveLength(route.length);
+  });
+
+  it('ne compte rien si le reste n’est pas fermé', () => {
+    const s = seeded(5);
+    const after = commitTraining(s, [MISS, MISS, MISS]);
+    expect(standing(after).score[0]).toBe(0);
+    expect(standing(after).round[0]).toBe(1);
+  });
+
+  it('se termine après vingt restes', () => {
+    let s = seeded(9);
+    for (let i = 0; i < 20; i++) s = commitTraining(s, [MISS, MISS, MISS]);
+    expect(drillOver(s)).toBe(true);
+    expect(s.winner).toBe(0);
   });
 });

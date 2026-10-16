@@ -17,7 +17,9 @@ import { h } from '../dom';
 import { frameToScreen } from '../frameview';
 import { clearGame, loadGame, saveGame } from '../game/store';
 import { makeEngine, newState, type AnyConfig, type VolleyEval } from '../game/engine';
+import { analyseX01 } from '../game/analysis';
 import { addGame } from '../game/history';
+import { statChips } from './statchips';
 import { renderScores, stripText } from './scoreboards';
 import { multiplyH, type Mat3, type Pt } from '../homography';
 import { icon } from '../icons';
@@ -26,6 +28,7 @@ import { loadOpenCV, type CV } from '../opencv';
 import { drawBoardOverlay, fitCanvas } from '../overlay-draw';
 import { getSettings } from '../settings';
 import { speak } from '../speech';
+import { endVolley, tick, tickDoubt } from '../sound';
 import { appBar, iconButton, openSheet, type SheetHandle } from '../ui';
 import { Volley, type DartRecord } from '../volley';
 import { addVolley } from '../dataset';
@@ -257,6 +260,7 @@ export function gameScreen(nav: Nav): Screen {
       const key = `${reviewing}:${ev.bust}:${ev.finished}:${ev.total}`;
       if (key !== announced) {
         announced = key;
+        if (!reviewing) endVolley();
         speak(ev.finished ? `Partie gagnée par ${name} !` : ev.bust ? 'Bust !' : ev.total);
       }
     } else {
@@ -273,6 +277,9 @@ export function gameScreen(nav: Nav): Screen {
     const rec = volley.addDetected(ev.score, ev.tip, ev.board);
     if (!rec) return;
     rec.uncertain = ev.uncertain;
+    // Un son dit que la fléchette est comptée, sans avoir à regarder l'écran.
+    if (ev.uncertain) tickDoubt();
+    else tick();
     if (detector) shots.set(rec.id, { img, f2b: detector.frameToBoard });
     lastPopped = rec.id;
     if (!turnOver()) setStatus(ev.uncertain ? `${ev.score.libelle} — score limite, vérifie` : `${ev.score.libelle} (${ev.score.points})`, ev.uncertain ? 'alert' : 'ready');
@@ -494,10 +501,14 @@ export function gameScreen(nav: Nav): Screen {
     const w = engine.winner!;
     const { head, rows } = engine.stats();
     speak(`Victoire de ${playerName(w)} !`);
-    addGame(engine.record());
+    const record = engine.record();
+    addGame(record);
+    // Détail X01 : moyenne, neuf premières fléchettes, finishes, grosses volées.
+    const detail = analyseX01([record]);
     detector?.setMode('removal');
     toggleExpand(false);
     endLayer.replaceChildren(
+      ...([
       h('div', { class: 'trophy' }, '🏆'),
       h('h2', {}, `${playerName(w)} gagne`),
       h(
@@ -508,6 +519,13 @@ export function gameScreen(nav: Nav): Screen {
           h('div', { class: 'stat-row' + (i === w ? ' winner' : '') }, h('span', { class: 'n' }, r[0]), ...r.slice(1).map((c) => h('span', {}, c))),
         ),
       ),
+      detail.length
+        ? h(
+            'div',
+            { class: 'stat-detail' },
+            ...detail.flatMap((a) => (detail.length > 1 ? [h('h3', {}, a.name), statChips(a)] : [statChips(a)])),
+          )
+        : null,
       h(
         'div',
         { class: 'end-actions' },
@@ -515,6 +533,7 @@ export function gameScreen(nav: Nav): Screen {
         h('button', { class: 'btn lg block', onclick: () => (clearGame(), nav('setup')) }, 'Nouvelle partie'),
         h('button', { class: 'btn ghost block', onclick: () => (clearGame(), nav('home')) }, 'Accueil'),
       ),
+      ].filter(Boolean) as Node[]),
     );
     endLayer.classList.remove('hidden');
     render();
@@ -528,6 +547,7 @@ export function gameScreen(nav: Nav): Screen {
       start: (cfg.start as 301 | 501) ?? 501,
       doubleOut: cfg.doubleOut ?? true,
       drill: cfg.drill ?? 'scoring',
+      legs: cfg.legs,
     });
     volley = new Volley();
     shots.clear();

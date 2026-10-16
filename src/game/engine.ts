@@ -20,7 +20,7 @@ import {
   type DrillKind,
   type TrainingState,
 } from './training';
-import { commitTurn, evaluateTurn, newGame, playerStats, remainingScores, undoTurn, type GameConfig, type GameState } from './x01';
+import { allTurns, commitTurn, evaluateTurn, newGame, playerStats, remainingScores, undoTurn, type GameConfig, type GameState } from './x01';
 
 export type AnyState = GameState | CricketState | SequenceState | TrainingState;
 
@@ -66,8 +66,11 @@ export function modeOf(state: AnyState): GameMode {
 export function labelOf(state: AnyState): string {
   const mode = modeOf(state);
   if (mode === 'x01') {
-    const c = (state as GameState).config;
-    return `${c.start} · ${c.doubleOut ? 'double out' : 'sortie libre'}`;
+    const s = state as GameState;
+    const legs = Math.max(1, s.config.legs ?? 1);
+    // Titre court : en match, le nombre de manches prime sur le mode de sortie.
+    if (legs > 1) return `${s.config.start} · ${legs} manches`;
+    return `${s.config.start} · ${s.config.doubleOut ? 'double out' : 'sortie libre'}`;
   }
   if (mode === 'cricket') return 'Cricket';
   if (mode === 'training') return `Entraînement · ${DRILLS[(state as TrainingState).config.drill].label}`;
@@ -111,8 +114,17 @@ export function makeEngine(initial: AnyState): Engine {
         return { over: ev.over, used: ev.used, finished: ev.finished, bust: false, total: bits.join(' · ') || '0' };
       }
       if (e.mode === 'training') {
-        const ev = evaluateTraining(e.state as TrainingState, darts);
-        return { over: ev.over, used: ev.used, finished: ev.finished, bust: ev.points < 0, total: ev.points > 0 ? `+${ev.points}` : String(ev.points) };
+        const s = e.state as TrainingState;
+        const ev = evaluateTraining(s, darts);
+        const total =
+          s.config.drill === 'checkout'
+            ? ev.points
+              ? 'Fermé !'
+              : '—'
+            : ev.points > 0
+              ? `+${ev.points}`
+              : String(ev.points);
+        return { over: ev.over, used: ev.used, finished: ev.finished, bust: ev.points < 0, total };
       }
       const ev = evaluateSequence(e.state as SequenceState, darts);
       return { over: ev.over, used: ev.used, finished: ev.finished, bust: false, total: ev.hits ? `+${ev.hits}` : '0' };
@@ -146,6 +158,7 @@ export function makeEngine(initial: AnyState): Engine {
       }
       if (e.mode === 'training') {
         const t = last as TrainingState['turns'][number];
+        if ((e.state as TrainingState).config.drill === 'checkout') return t.points ? 'fermé' : 'raté';
         return t.points > 0 ? `+${t.points}` : String(t.points);
       }
       const t = last as SequenceState['turns'][number];
@@ -166,8 +179,9 @@ export function makeEngine(initial: AnyState): Engine {
       if (e.mode === 'training') {
         const s = e.state as TrainingState;
         const st = standing(s);
-        const cible = drillTarget(s.config.drill, st.round[e.current]).libelle;
+        const cible = drillTarget(s.config.drill, st.round[e.current], s.config.seed ?? 0).libelle;
         const score = st.score[e.current];
+        if (s.config.drill === 'checkout') return solo ? `${cible}. Finis en trois fléchettes.` : `À ${name} : ${cible}.`;
         return solo ? `${score} points. Vise le ${cible}.` : `À ${name}, ${score} points, vise le ${cible}.`;
       }
       const s = e.state as SequenceState;
@@ -189,9 +203,16 @@ export function makeEngine(initial: AnyState): Engine {
         };
       }
       if (e.mode === 'training') {
+        const s = e.state as TrainingState;
+        if (s.config.drill === 'checkout') {
+          return {
+            head: ['Joueur', 'Réussis', 'Tentatives', 'Taux'],
+            rows: trainingStats(s).map((p) => [p.name, String(p.score), String(p.rounds), p.rounds ? `${Math.round((100 * p.score) / p.rounds)} %` : '—']),
+          };
+        }
         return {
           head: ['Joueur', 'Score', 'Volées', 'Par volée'],
-          rows: trainingStats(e.state as TrainingState).map((p) => [p.name, String(p.score), String(p.rounds), fmt1(p.perRound)]),
+          rows: trainingStats(s).map((p) => [p.name, String(p.score), String(p.rounds), fmt1(p.perRound)]),
         };
       }
       return {
@@ -212,12 +233,21 @@ export function makeEngine(initial: AnyState): Engine {
           mode: 'x01',
           label: e.label,
           ms,
+          // Détail des volées : il permettra de recalculer n'importe quelle statistique.
+          turns: allTurns(s).map((t) => ({
+            p: t.player,
+            r: t.before,
+            s: t.before - t.after,
+            d: t.darts.map((d) => d.libelle),
+            ...(t.bust ? { b: 1 as const } : {}),
+            ...(t.finished ? { f: 1 as const } : {}),
+          })),
           players: st.map((p, i) => ({
             name: p.name,
             result: String(p.remaining),
             darts: p.darts,
             won: i === winner,
-            scored: s.config.start - p.remaining,
+            scored: allTurns(s).filter((t) => t.player === i).reduce((a, t) => a + (t.before - t.after), 0),
             best: p.best,
           })),
         };
@@ -277,11 +307,13 @@ export interface AnyConfig {
   doubleOut: boolean;
   /** Entraînement seulement : l'exercice choisi. */
   drill: DrillKind;
+  /** X01 seulement : manches à gagner (1 = une seule manche). */
+  legs?: number;
 }
 
 export function newState(c: AnyConfig): AnyState {
   if (c.mode === 'training') return newTraining({ drill: c.drill, players: c.players });
   if (c.mode === 'cricket') return newCricket({ players: c.players });
   if (c.mode === 'horloge' || c.mode === 'doubles') return newSequence({ kind: c.mode, players: c.players });
-  return newGame({ start: c.start, doubleOut: c.doubleOut, players: c.players } satisfies GameConfig);
+  return newGame({ start: c.start, doubleOut: c.doubleOut, legs: c.legs ?? 1, players: c.players } satisfies GameConfig);
 }

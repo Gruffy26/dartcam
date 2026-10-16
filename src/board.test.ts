@@ -8,6 +8,8 @@ import {
   SECTORS,
   sectorCenterAngle,
   sectorIndexAt,
+  parseScore,
+  MISS,
 } from './board';
 
 const EPS = 1e-6;
@@ -151,5 +153,29 @@ describe('distance au fil le plus proche', async () => {
   });
   it('près du bord du double', () => {
     expect(distanceToWire(0, 169)).toBeCloseTo(1, 5);
+  });
+});
+
+describe('relecture d’un score écrit', () => {
+  it('relit les étiquettes de l’app', () => {
+    expect(parseScore('T20')).toEqual(makeScore(20, 3));
+    expect(parseScore('D16')).toEqual(makeScore(16, 2));
+    expect(parseScore('7')).toEqual(makeScore(7, 1));
+    expect(parseScore('25')).toEqual(makeScore(25, 1));
+    expect(parseScore('BULL')).toEqual(makeScore(25, 2));
+    expect(parseScore('0')).toEqual(MISS);
+  });
+
+  it('rend null sur ce qui n’est pas un score', () => {
+    for (const bad of ['', 'X', 'T21', 'D0', 'bull!', '100']) expect(parseScore(bad)).toBe(null);
+  });
+
+  it('fait l’aller-retour pour toutes les cases', () => {
+    for (let n = 1; n <= 20; n++) {
+      for (const m of [1, 2, 3] as const) {
+        const sc = makeScore(n, m);
+        expect(parseScore(sc.libelle)).toEqual(sc);
+      }
+    }
   });
 });

@@ -7,7 +7,7 @@ import { CRICKET_TARGETS, evaluateCricket, MARKS_TO_OPEN, type CricketState } fr
 import type { Engine } from '../game/engine';
 import { evaluateSequence, progress, SEQUENCE_LENGTH, targetAt, type SequenceState } from '../game/sequence';
 import { DRILLS, drillTarget, evaluateTraining, standing, type TrainingState } from '../game/training';
-import { evaluateTurn, playerStats, remainingScores, type GameState } from '../game/x01';
+import { evaluateTurn, legsTarget, legsWon, playerStats, remainingScores, type GameState } from '../game/x01';
 import { h } from '../dom';
 
 const fmt1 = (v: number) => v.toFixed(1).replace('.', ',');
@@ -76,7 +76,24 @@ function x01Board(s: GameState, pending: Score[]): HTMLElement[] {
             .map(({ name, i }) => h('div', { class: 'other' }, h('span', { class: 'other-name' }, name), h('span', { class: 'other-rem' }, String(rem[i])))),
         )
       : null;
-  return others ? [active, others] : [active];
+  // Match en plusieurs manches : le score de manches, au-dessus des scores.
+  const target = legsTarget(s);
+  const legs =
+    target > 1
+      ? h(
+          'div',
+          { class: 'legs-bar' },
+          h('span', { class: 'legs-title' }, `Manches · premier à ${target}`),
+          h(
+            'span',
+            { class: 'legs-scores' },
+            ...s.config.players.map((name, i) =>
+              h('span', { class: 'legs-one' + (i === cur ? ' on' : '') }, h('em', {}, String(legsWon(s)[i])), h('small', {}, name)),
+            ),
+          ),
+        )
+      : null;
+  return [legs, active, others].filter(Boolean) as HTMLElement[];
 }
 
 // --- Cricket ---------------------------------------------------------------
@@ -114,7 +131,8 @@ function trainingBoard(s: TrainingState, pending: Score[]): HTMLElement[] {
   const cur = s.current;
   const ev = evaluateTraining(s, pending);
   const done = st.round[cur];
-  const target = drillTarget(s.config.drill, done);
+  const target = drillTarget(s.config.drill, done, s.config.seed ?? 0);
+  const isCheckout = s.config.drill === 'checkout';
   const active = h(
     'div',
     { class: 'active-card' },
@@ -122,10 +140,14 @@ function trainingBoard(s: TrainingState, pending: Score[]): HTMLElement[] {
       'div',
       { class: 'active-head' },
       h('span', { class: 'active-name' }, s.config.players[cur]),
-      h('span', { class: 'active-avg' }, `volée ${Math.min(done + 1, drill.rounds)}/${drill.rounds}`),
+      h(
+        'span',
+        { class: 'active-avg' },
+        isCheckout ? `${ev.score} réussis · ${Math.min(done + 1, drill.rounds)}/${drill.rounds}` : `volée ${Math.min(done + 1, drill.rounds)}/${drill.rounds}`,
+      ),
     ),
-    h('div', { class: 'active-remaining' + (ev.score < 0 ? ' bust' : '') }, String(ev.score)),
-    h('div', { class: 'checkout' }, `Vise le ${target.libelle}`),
+    h('div', { class: 'active-remaining' + (ev.score < 0 ? ' bust' : '') }, isCheckout ? target.libelle : String(ev.score)),
+    h('div', { class: 'checkout' }, isCheckout ? 'Ferme-le en trois fléchettes' : `Vise le ${target.libelle}`),
     h(
       'div',
       { class: 'seq-track' },

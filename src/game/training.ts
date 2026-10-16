@@ -11,10 +11,15 @@
 // - Bob 27 : vingt tours sur les doubles, du D1 au D20. On part de 27 points, chaque
 //   double touché rapporte deux fois le numéro, un tour sans rien le fait perdre.
 //   Score négatif : éliminé.
+// - Checkouts : vingt restes tirés au sort, trois fléchettes pour fermer chacun au
+//   double. Le score est le nombre de finishes réussis — l'exercice qui fait gagner
+//   les parties de X01.
 
 import type { Score } from '../board';
+import { suggestCheckout } from './checkout';
+import { evaluateTurn } from './x01';
 
-export type DrillKind = 'scoring' | 'shanghai' | 'bob27';
+export type DrillKind = 'scoring' | 'shanghai' | 'bob27' | 'checkout';
 
 export interface Drill {
   kind: DrillKind;
@@ -29,11 +34,37 @@ export const DRILLS: Record<DrillKind, Drill> = {
   scoring: { kind: 'scoring', label: 'Scoring 20', rounds: 10, start: 0, hint: 'Dix volées sur le 20 : vise le triple, tout ce qui rentre compte.' },
   shanghai: { kind: 'shanghai', label: 'Shanghai', rounds: 20, start: 0, hint: 'Le 1 au premier tour, le 2 au deuxième… Simple + double + triple dans le même tour et c’est gagné.' },
   bob27: { kind: 'bob27', label: 'Bob 27', rounds: 20, start: 27, hint: 'Les vingt doubles, du D1 au D20. Un tour sans rien coûte deux fois le numéro ; en dessous de zéro, c’est fini.' },
+  checkout: { kind: 'checkout', label: 'Checkouts', rounds: 20, start: 0, hint: 'Vingt restes tirés au sort : trois fléchettes pour fermer, en finissant sur un double. Le score est le nombre de finishes réussis.' },
 };
+
+/**
+ * Restes proposés à l'entraînement : les vrais finishes de trois fléchettes (41 à 170)
+ * et les doubles simples (2 à 40). On laisse de côté les petits restes impairs, qui ne
+ * se rencontrent presque jamais en partie.
+ */
+export const CHECKOUT_POOL: number[] = (() => {
+  const out: number[] = [];
+  for (let n = 2; n <= 40; n += 2) out.push(n);
+  for (let n = 41; n <= 170; n++) if (suggestCheckout(n, 3, true)) out.push(n);
+  return out;
+})();
+
+/** Reste à fermer au tour `round` : tiré au sort, mais toujours le même pour une séance. */
+export function checkoutTarget(seed: number, round: number): number {
+  // Suite déterministe : la même séance rejoue les mêmes restes (reprise, annulation).
+  let x = (seed * 2654435761 + round * 40503 + 12345) >>> 0;
+  x ^= x >>> 15;
+  x = (x * 2246822507) >>> 0;
+  // Le « ou exclusif » rend un entier signé : on repasse en non signé avant le modulo.
+  x = (x ^ (x >>> 13)) >>> 0;
+  return CHECKOUT_POOL[x % CHECKOUT_POOL.length];
+}
 
 export interface TrainingConfig {
   drill: DrillKind;
   players: string[];
+  /** Tirage des restes de l'exercice « Checkouts ». */
+  seed?: number;
 }
 
 export interface TrainingTurn {
@@ -54,15 +85,20 @@ export interface TrainingState {
 }
 
 /** Numéro visé au tour `round` (0 = premier tour). */
-export function drillTarget(kind: DrillKind, round: number): { secteur: number; libelle: string } {
+export function drillTarget(kind: DrillKind, round: number, seed = 0): { secteur: number; libelle: string } {
   if (kind === 'scoring') return { secteur: 20, libelle: '20' };
+  if (kind === 'checkout') {
+    const n = checkoutTarget(seed, round);
+    return { secteur: n, libelle: String(n) };
+  }
   const n = Math.min(round, 19) + 1;
   return kind === 'bob27' ? { secteur: n, libelle: `D${n}` } : { secteur: n, libelle: String(n) };
 }
 
 /** Points rapportés par une volée, selon l'exercice. */
-export function roundPoints(kind: DrillKind, round: number, darts: Score[]): number {
-  const t = drillTarget(kind, round);
+export function roundPoints(kind: DrillKind, round: number, darts: Score[], seed = 0): number {
+  const t = drillTarget(kind, round, seed);
+  if (kind === 'checkout') return evaluateTurn(t.secteur, darts, true).finished ? 1 : 0;
   if (kind === 'scoring') return darts.reduce((s, d) => s + d.points, 0);
   if (kind === 'shanghai') return darts.filter((d) => d.secteur === t.secteur).reduce((s, d) => s + d.points, 0);
   const hits = darts.filter((d) => d.secteur === t.secteur && d.multiplicateur === 2).length;
@@ -109,12 +145,17 @@ export interface TrainingEval {
 }
 
 export function evaluateTraining(state: TrainingState, darts: Score[]): TrainingEval {
-  const { drill } = state.config;
+  const { drill, seed = 0 } = state.config;
   const st = standing(state);
   const p = state.current;
   const round = st.round[p];
+  if (drill === 'checkout') {
+    const target = drillTarget('checkout', round, seed).secteur;
+    const ev = evaluateTurn(target, darts, true);
+    return { points: ev.finished ? 1 : 0, score: st.score[p] + (ev.finished ? 1 : 0), finished: false, used: ev.used, over: ev.over, round };
+  }
   const used = Math.min(3, darts.length);
-  const points = roundPoints(drill, round, darts.slice(0, used));
+  const points = roundPoints(drill, round, darts.slice(0, used), seed);
   // Bob 27 : la pénalité ne tombe qu'une fois les trois fléchettes lancées.
   const live = drill === 'bob27' && used < 3 ? Math.max(0, points) : points;
   const score = st.score[p] + live;
@@ -125,7 +166,8 @@ export function evaluateTraining(state: TrainingState, darts: Score[]): Training
 export function newTraining(config: TrainingConfig): TrainingState {
   const players = config.players.map((p) => p.trim()).filter(Boolean);
   if (players.length < 1 || players.length > 4) throw new Error('De 1 à 4 joueurs');
-  return { version: 1, kind: 'training', config: { ...config, players }, turns: [], current: 0, winner: null, startedAt: new Date().toISOString() };
+  const seed = config.seed ?? Math.floor(Math.random() * 1e9);
+  return { version: 1, kind: 'training', config: { ...config, players, seed }, turns: [], current: 0, winner: null, startedAt: new Date().toISOString() };
 }
 
 /** Joueur en tête à la fin de l'exercice. */
@@ -150,7 +192,7 @@ export function commitTraining(state: TrainingState, darts: Score[]): TrainingSt
   if (state.winner != null) return state;
   const ev = evaluateTraining(state, darts);
   const used = darts.slice(0, ev.used);
-  const points = roundPoints(state.config.drill, ev.round, used);
+  const points = roundPoints(state.config.drill, ev.round, used, state.config.seed ?? 0);
   const next: TrainingState = {
     ...state,
     turns: [...state.turns, { player: state.current, darts: used, points }],

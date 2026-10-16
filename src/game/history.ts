@@ -8,7 +8,7 @@ import { loadJSON, removeKey, saveJSON } from '../storage';
 
 const KEY = 'dartcam.history';
 /** Au-delà, les plus anciennes parties sont oubliées. */
-export const MAX_GAMES = 200;
+export const MAX_GAMES = 150;
 
 export type GameMode = 'x01' | 'cricket' | 'horloge' | 'doubles' | 'training';
 
@@ -23,6 +23,26 @@ export interface HistoryPlayer {
   best?: number;
 }
 
+/**
+ * Une volée enregistrée, au format le plus court possible : les parties s'empilent dans
+ * le stockage du téléphone. `r` (reste avant la volée) et `d` (étiquettes des fléchettes)
+ * suffisent à tout recalculer plus tard — moyennes, séries, pourcentage de finish.
+ */
+export interface RecordedTurn {
+  /** Index du joueur. */
+  p: number;
+  /** Reste avant la volée (X01). */
+  r: number;
+  /** Points marqués. */
+  s: number;
+  /** Étiquettes des fléchettes, « T20 », « D16 »… */
+  d: string[];
+  /** Volée annulée par la règle. */
+  b?: 1;
+  /** Volée qui termine la manche. */
+  f?: 1;
+}
+
 export interface GameRecord {
   at: string;
   mode: GameMode;
@@ -31,6 +51,8 @@ export interface GameRecord {
   players: HistoryPlayer[];
   /** Durée de la partie (ms), si connue. */
   ms?: number;
+  /** Détail des volées (X01), pour pouvoir ré-analyser la partie plus tard. */
+  turns?: RecordedTurn[];
 }
 
 export function history(): GameRecord[] {

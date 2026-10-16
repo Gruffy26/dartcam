@@ -185,6 +185,9 @@ input { font: inherit; color: inherit; }
 .segmented { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; padding: 4px; background: var(--surface-2); border-radius: var(--radius); }
 .seg { min-height: 44px; border-radius: 10px; font-weight: 600; color: var(--muted); transition: background 0.15s, color 0.15s; }
 .seg.on { background: var(--surface-3); color: var(--text); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3); }
+/* Plus de trois choix : on passe à la ligne plutôt que d'écraser les libellés. */
+.segmented.wrap { grid-auto-flow: row; grid-template-columns: repeat(3, 1fr); }
+.segmented.wrap .seg { font-size: 0.92rem; padding: 0 4px; }
 
 /* Curseurs (réglages avancés) */
 .slider { display: grid; gap: 6px; padding: 8px 0; }
@@ -428,6 +431,41 @@ input { font: inherit; color: inherit; }
 .empty-ic { display: grid; place-items: center; width: 62px; height: 62px; border-radius: 22px; background: var(--surface); color: var(--muted); }
 .empty-state b { font-size: 1.05rem; }
 .empty-state p { margin: 0; color: var(--muted); max-width: 26ch; }
+
+/* --- Pastilles de statistiques -------------------------------------------- */
+.chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.chip {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.chip b { font-size: 0.98rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.chip small { color: var(--muted); font-size: 0.76rem; }
+.chip.strong { background: rgba(47, 191, 143, 0.14); border-color: rgba(47, 191, 143, 0.35); }
+.chip.strong b { color: var(--accent); }
+.stat-detail { display: grid; gap: 8px; margin-top: 4px; }
+.stat-detail h3 { margin: 0; font-size: 0.85rem; font-weight: 700; color: var(--muted); }
+
+/* --- Match en plusieurs manches ------------------------------------------ */
+.legs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.legs-title { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+.legs-scores { display: flex; gap: 14px; }
+.legs-one { display: flex; align-items: baseline; gap: 5px; color: var(--muted); }
+.legs-one em { font-style: normal; font-size: 1.25rem; font-weight: 800; }
+.legs-one.on { color: var(--gold); }
 
 /* --- Cricket et séries --------------------------------------------------- */
 .cricket {

@@ -109,6 +109,7 @@ export function settingsScreen(nav: Nav): HTMLElement {
     group(
       'Partie',
       row('Annonce vocale', 'Score de chaque volée à voix haute', toggle(s.voice, (v) => updateSettings({ voice: v }), 'Annonce vocale')),
+      row('Sons', 'Un « tic » à chaque fléchette comptée', toggle(s.sounds, (v) => updateSettings({ sounds: v }), 'Sons')),
     ),
     group(
       'Précision de l’analyse',

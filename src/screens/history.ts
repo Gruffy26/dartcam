@@ -1,10 +1,10 @@
 import { h } from '../dom';
+import { analyseX01 } from '../game/analysis';
 import { clearHistory, history, totals, trainingProgress, type GameRecord } from '../game/history';
+import { statChips } from './statchips';
 import { icon } from '../icons';
 import type { Nav } from '../main';
 import { appBar, group, row } from '../ui';
-
-const fmt1 = (v: number) => v.toFixed(1).replace('.', ',');
 
 /** « hier », « mardi 14 », « 3 oct. » selon l'ancienneté. */
 function whenText(iso: string): string {
@@ -45,6 +45,7 @@ export function historyScreen(nav: Nav): HTMLElement {
   const list = h('div', { class: 'hist-list' }, ...games.map(gameCard));
 
   const drills = trainingProgress(games);
+  const x01 = analyseX01(games);
   const body = games.length
     ? [
         ...(drills.length
@@ -61,17 +62,35 @@ export function historyScreen(nav: Nav): HTMLElement {
               ),
             ]
           : []),
+        ...(x01.length
+          ? [
+              h('h2', { class: 'group-title' }, 'Statistiques X01'),
+              h(
+                'div',
+                { class: 'hist-list' },
+                ...x01.map((a) =>
+                  h(
+                    'article',
+                    { class: 'hist-card' },
+                    h('div', { class: 'hist-head' }, h('b', {}, a.name), h('span', {}, `${a.games} partie${a.games > 1 ? 's' : ''} · ${a.darts} fléchettes`)),
+                    statChips(a),
+                  ),
+                ),
+              ),
+            ]
+          : []),
         group(
           'Depuis le début',
+          // Vue tous jeux confondus : les moyennes X01 sont détaillées plus haut.
           ...totals(games).map((t) =>
             row(
               t.name,
-              `${t.games} partie${t.games > 1 ? 's' : ''} · ${t.wins} gagnée${t.wins > 1 ? 's' : ''} · ${t.darts} fléchettes`,
+              `${t.games} partie${t.games > 1 ? 's' : ''} · ${t.darts} fléchettes${t.best ? ` · record ${t.best}` : ''}`,
               h(
                 'span',
                 { class: 'tot-right' },
-                h('b', {}, t.average ? fmt1(t.average) : '—'),
-                h('small', {}, t.best ? `record ${t.best}` : 'moyenne X01'),
+                h('b', {}, `${Math.round((100 * t.wins) / Math.max(1, t.games))} %`),
+                h('small', {}, `${t.wins} victoire${t.wins > 1 ? 's' : ''}`),
               ),
             ),
           ),

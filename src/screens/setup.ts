@@ -7,6 +7,7 @@ import { icon } from '../icons';
 import type { Nav } from '../main';
 import { getSettings, updateSettings } from '../settings';
 import { unlockSpeech } from '../speech';
+import { unlockSound } from '../sound';
 import { appBar, group, row, segmented, toggle } from '../ui';
 
 /** Une phrase pour dire à quoi on joue. */
@@ -28,18 +29,30 @@ export function setupScreen(nav: Nav): HTMLElement {
     { class: 'stack' },
     segmented([{ value: 501, label: '501' }, { value: 301, label: '301' }], cfg.start, (v) => (cfg.start = v as 301 | 501)),
     segmented([{ value: true, label: 'Double out' }, { value: false, label: 'Sortie libre' }], cfg.doubleOut, (v) => (cfg.doubleOut = v as boolean)),
+    segmented(
+      [
+        { value: 1, label: '1 manche' },
+        { value: 2, label: '3 manches' },
+        { value: 3, label: '5 manches' },
+      ],
+      cfg.legs ?? 1,
+      (v) => (cfg.legs = v as number),
+    ),
   );
   // Exercices d'entraînement : chacun donne un score comparable d'une séance à l'autre.
   const drillOnly = h(
     'div',
     { class: 'stack' },
-    segmented(
-      Object.values(DRILLS).map((d) => ({ value: d.kind, label: d.label })),
-      cfg.drill,
-      (v) => {
-        cfg.drill = v as DrillKind;
-        showMode();
-      },
+    Object.assign(
+      segmented(
+        Object.values(DRILLS).map((d) => ({ value: d.kind, label: d.label })),
+        cfg.drill,
+        (v) => {
+          cfg.drill = v as DrillKind;
+          showMode();
+        },
+      ),
+      { className: 'segmented wrap' },
     ),
   );
   const showMode = () => {
@@ -95,7 +108,8 @@ export function setupScreen(nav: Nav): HTMLElement {
     clearGame();
     const state = newState(config);
     saveGame({ state, pending: [] });
-    // Sur iPhone, la voix doit être « débloquée » par un toucher : on annonce le début.
+    // Sur iPhone, voix et sons doivent être « débloqués » par un toucher.
+    unlockSound();
     unlockSpeech(`${labelOf(state)}, c'est parti ! À ${players[0]}.`);
     nav('game');
   }
@@ -106,19 +120,22 @@ export function setupScreen(nav: Nav): HTMLElement {
     appBar({ title: 'Nouvelle partie', onBack: () => nav('home') }),
     group(
       'Jeu',
-      segmented(
-        [
-          { value: 'x01', label: 'X01' },
-          { value: 'cricket', label: 'Cricket' },
-          { value: 'horloge', label: 'Horloge' },
-          { value: 'doubles', label: 'Doubles' },
-          { value: 'training', label: 'Entraînement' },
-        ],
-        cfg.mode,
-        (v) => {
-          cfg.mode = v as GameMode;
-          showMode();
-        },
+      Object.assign(
+        segmented(
+          [
+            { value: 'x01', label: 'X01' },
+            { value: 'cricket', label: 'Cricket' },
+            { value: 'horloge', label: 'Horloge' },
+            { value: 'doubles', label: 'Doubles' },
+            { value: 'training', label: 'Entraînement' },
+          ],
+          cfg.mode,
+          (v) => {
+            cfg.mode = v as GameMode;
+            showMode();
+          },
+        ),
+        { className: 'segmented wrap' },
       ),
       hint,
       x01Only,

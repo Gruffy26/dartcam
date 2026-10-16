@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeScore, MISS } from '../board';
 import { suggestCheckout } from './checkout';
-import { commitTurn, evaluateTurn, newGame, playerStats, remainingScores, undoTurn } from './x01';
+import { commitTurn, evaluateTurn, newGame, playerStats, remainingScores, undoTurn, legsWon, legsTarget, allTurns, type GameState} from './x01';
 
 const S = (n: number) => makeScore(n, 1);
 const D = (n: number) => makeScore(n, 2);
@@ -115,5 +115,67 @@ describe('suggestion de finish', () => {
 
   it('sans double out, on peut finir sur n’importe quoi', () => {
     expect(lib(suggestCheckout(60, 3, false))).toBe('T20');
+  });
+});
+
+describe('match en plusieurs manches', () => {
+  // 501 en trois volées : 180, 180, puis le finish classique 141 (T20 T19 D12).
+  // Les autres joueurs ratent tout, pour que le joueur courant reste le même.
+  const finish = (s: GameState) => {
+    const big = [makeScore(20, 3), makeScore(20, 3), makeScore(20, 3)];
+    let g = s;
+    const others = () => {
+      for (let k = 1; k < s.config.players.length; k++) g = commitTurn(g, [MISS, MISS, MISS]);
+    };
+    g = commitTurn(g, big);
+    others();
+    g = commitTurn(g, big);
+    others();
+    return commitTurn(g, [makeScore(20, 3), makeScore(19, 3), makeScore(12, 2)]);
+  };
+
+  it('une manche gagnée ne termine pas un match au meilleur des trois', () => {
+    let g = newGame({ start: 501, doubleOut: true, players: ['A', 'B'], legs: 2 });
+    g = finish(g);
+    expect(g.winner).toBe(null);
+    expect(legsWon(g)).toEqual([1, 0]);
+    // Nouvelle manche : tout le monde repart du départ, et c'est B qui commence.
+    expect(remainingScores(g)).toEqual([501, 501]);
+    expect(g.current).toBe(1);
+  });
+
+  it('le match s’arrête quand un joueur atteint le nombre de manches', () => {
+    let g = newGame({ start: 501, doubleOut: true, players: ['A'], legs: 2 });
+    g = finish(g);
+    expect(g.winner).toBe(null);
+    g = finish(g);
+    expect(g.winner).toBe(0);
+    expect(legsWon(g)).toEqual([2]);
+  });
+
+  it('les statistiques couvrent tout le match', () => {
+    let g = newGame({ start: 501, doubleOut: true, players: ['A'], legs: 2 });
+    g = finish(g);
+    const afterOne = playerStats(g)[0].darts;
+    g = finish(g);
+    expect(playerStats(g)[0].darts).toBe(afterOne * 2);
+    expect(playerStats(g)[0].legs).toBe(2);
+  });
+
+  it('annuler ramène dans la manche précédente', () => {
+    let g = newGame({ start: 501, doubleOut: true, players: ['A', 'B'], legs: 2 });
+    g = finish(g);
+    expect(g.turns).toHaveLength(0);
+    g = undoTurn(g);
+    expect(legsWon(g)).toEqual([0, 0]);
+    expect(g.current).toBe(0);
+    expect(remainingScores(g)[0]).toBe(141);
+  });
+
+  it('une partie d’avant cette option reste une manche unique', () => {
+    const old = { version: 1, config: { start: 501, doubleOut: true, players: ['A'] }, turns: [], current: 0, winner: null, startedAt: '' } as GameState;
+    expect(legsTarget(old)).toBe(1);
+    expect(legsWon(old)).toEqual([0]);
+    expect(allTurns(old)).toEqual([]);
   });
 });
