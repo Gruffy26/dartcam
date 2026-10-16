@@ -1,15 +1,15 @@
 // Sauvegarde de la partie en cours sur le téléphone, pour la reprendre si l'app est
 // fermée (y compris la volée en cours).
 
+import type { AnyConfig, AnyState } from './engine';
 import type { DartRecord } from '../volley';
 import { loadJSON, removeKey, saveJSON } from '../storage';
-import type { GameConfig, GameState } from './x01';
 
 const KEY = 'dartcam.game';
 const CONFIG_KEY = 'dartcam.lastConfig';
 
 export interface SavedGame {
-  state: GameState;
+  state: AnyState;
   /** Fléchettes de la volée en cours (pas encore enregistrée). */
   pending: DartRecord[];
 }
@@ -33,10 +33,13 @@ export function clearGame(): void {
   removeKey(KEY);
 }
 
-export function saveLastConfig(c: GameConfig): void {
+export function saveLastConfig(c: AnyConfig): void {
   saveJSON(CONFIG_KEY, c);
 }
 
-export function lastConfig(): GameConfig {
-  return loadJSON<GameConfig>(CONFIG_KEY, { start: 501, doubleOut: true, players: ['Joueur 1'] });
+const DEFAULT_CONFIG: AnyConfig = { mode: 'x01', start: 501, doubleOut: true, players: ['Joueur 1'] };
+
+export function lastConfig(): AnyConfig {
+  const c = loadJSON<Partial<AnyConfig>>(CONFIG_KEY, {});
+  return { ...DEFAULT_CONFIG, ...c, players: c.players?.length ? c.players : [...DEFAULT_CONFIG.players] };
 }

@@ -15,9 +15,10 @@ import { createCameraStage, type FrameInfo } from '../camera-stage';
 import { analysisBounds, DartDetector, type DartEvent } from '../detector/detector';
 import { h } from '../dom';
 import { frameToScreen } from '../frameview';
-import { suggestCheckout } from '../game/checkout';
 import { clearGame, loadGame, saveGame } from '../game/store';
-import { commitTurn, evaluateTurn, newGame, playerStats, remainingScores, undoTurn, type GameState, type TurnEval } from '../game/x01';
+import { makeEngine, newState, type AnyConfig, type VolleyEval } from '../game/engine';
+import { addGame } from '../game/history';
+import { renderScores, stripText } from './scoreboards';
 import { multiplyH, type Mat3, type Pt } from '../homography';
 import { icon } from '../icons';
 import type { Nav, Screen } from '../main';
@@ -57,7 +58,7 @@ export function gameScreen(nav: Nav): Screen {
     queueMicrotask(() => nav('setup'));
     return document.createElement('main');
   }
-  let game: GameState = saved.state;
+  const engine = makeEngine(saved.state);
   let volley = new Volley();
   volley.darts = saved.pending ?? [];
   /** Image analysée et calibration au moment de chaque fléchette (pour la corriger de face). */
@@ -100,7 +101,7 @@ export function gameScreen(nav: Nav): Screen {
   };
 
   // --- Éléments ---------------------------------------------------------
-  const title = `${game.config.start} · ${game.config.doubleOut ? 'double out' : 'sortie libre'}`;
+  const title = engine.label;
   const scores = h('section', { class: 'scores' });
   const dartsRow = h('div', { class: 'darts' });
   const status = h('div', { class: 'status' }, h('span'));
@@ -233,12 +234,12 @@ export function gameScreen(nav: Nav): Screen {
   }
 
   // --- Volée et règles du jeu ---------------------------------------------
-  const persist = () => saveGame({ state: game, pending: volley.darts });
-  const remaining = () => remainingScores(game);
-  const playerName = (i: number) => game.config.players[i];
+  const persist = () => saveGame({ state: engine.state, pending: volley.darts });
+  const playerName = (i: number) => engine.players[i];
+  const pending = () => volley.darts.map((d) => d.score);
 
-  function turnEval(): TurnEval {
-    return evaluateTurn(remaining()[game.current], volley.darts.map((d) => d.score), game.config.doubleOut);
+  function turnEval(): VolleyEval {
+    return engine.evaluate(pending());
   }
   /** La volée est terminée : 3 fléchettes, bust ou victoire. */
   const turnOver = () => volley.full || turnEval().over;
@@ -247,16 +248,16 @@ export function gameScreen(nav: Nav): Screen {
     const ev = turnEval();
     if (turnOver()) {
       detector?.setMode('removal');
-      const name = playerName(game.current);
-      if (reviewing) setStatus(`Volée précédente : ${ev.scored} — corrige puis « Valider »`, 'alert');
+      const name = playerName(engine.current);
+      if (reviewing) setStatus(`Volée précédente : ${ev.total} — corrige puis « Valider »`, 'alert');
       else if (ev.finished) setStatus(`${name} finit ! Retire tes fléchettes pour valider`, 'ready');
-      else if (ev.bust) setStatus(`Bust : ${name} reste à ${ev.remaining}. Va retirer tes fléchettes`, 'alert');
-      else setStatus(`Volée de ${ev.scored}. Va retirer tes fléchettes`, 'wait');
+      else if (ev.bust) setStatus(`Bust : ${name} ne marque rien. Va retirer tes fléchettes`, 'alert');
+      else setStatus(`Volée de ${ev.total}. Va retirer tes fléchettes`, 'wait');
       // Annonce vocale (une seule fois, sauf si une correction change le résultat).
-      const key = `${reviewing}:${ev.bust}:${ev.finished}:${ev.scored}`;
+      const key = `${reviewing}:${ev.bust}:${ev.finished}:${ev.total}`;
       if (key !== announced) {
         announced = key;
-        speak(ev.finished ? `Partie gagnée par ${name} !` : ev.bust ? 'Bust !' : String(ev.scored));
+        speak(ev.finished ? `Partie gagnée par ${name} !` : ev.bust ? 'Bust !' : ev.total);
       }
     } else {
       detector?.setMode('throwing');
@@ -303,10 +304,10 @@ export function gameScreen(nav: Nav): Screen {
    * avec ses images, pour corriger une fléchette. Rien ne s'enregistre avant « Valider ».
    */
   function reviewPrevious() {
-    const last = game.turns[game.turns.length - 1];
-    if (reviewing || !last || game.winner != null) return;
+    const last = engine.state.turns[engine.turnCount - 1];
+    if (reviewing || !last || engine.winner != null) return;
     sheet?.close();
-    game = undoTurn(game);
+    engine.undo();
     volley = new Volley();
     shots.clear();
     if (previous) {
@@ -335,24 +336,23 @@ export function gameScreen(nav: Nav): Screen {
 
   function cleared(manual: boolean) {
     reviewing = false;
-    if (volley.darts.length && game.winner == null) {
+    if (volley.darts.length && engine.winner == null) {
       capture(volley.darts);
-      const before = game.current;
+      const before = engine.current;
       previous = { darts: volley.darts, shots: new Map(shots), player: before };
-      game = commitTurn(game, volley.darts.map((d) => d.score));
-      const last = game.turns[game.turns.length - 1];
+      engine.commit(pending());
+      const summary = engine.lastSummary();
       volley = new Volley();
       shots.clear();
       announced = '';
-      if (game.winner != null) {
+      if (engine.winner != null) {
         persist();
         showEnd();
         return;
       }
-      const next = game.current;
-      const rem = remaining()[next];
-      setStatus(`${last.bust ? 'Bust' : `${playerName(before)} : ${last.before - last.after}`} — à ${playerName(next)}${manual ? ', attends « Prêt »' : ''}`, 'wait');
-      speak(game.config.players.length > 1 ? `À ${playerName(next)}, il reste ${rem}.` : `Il reste ${rem}.`);
+      const next = engine.current;
+      setStatus(`${playerName(before)} : ${summary} — à ${playerName(next)}${manual ? ', attends « Prêt »' : ''}`, 'wait');
+      speak(engine.nextSay());
     } else if (manual) setStatus('Nouvelle image de référence… attends « Prêt »', 'wait');
     volley = new Volley();
     shots.clear();
@@ -367,52 +367,11 @@ export function gameScreen(nav: Nav): Screen {
   function render() {
     // Bouton « Retirées » / « Valider », et accès à la volée précédente.
     clearBtn.replaceChildren(icon(reviewing ? 'check' : 'hand', 20), document.createTextNode(reviewing ? 'Valider' : 'Retirées'));
-    const canReview = !reviewing && game.winner == null && !!game.turns.length && !volley.darts.length;
+    const canReview = !reviewing && engine.winner == null && !!engine.turnCount && !volley.darts.length;
     prevChip.classList.toggle('hidden', !canReview);
-    if (canReview) {
-      const last = game.turns[game.turns.length - 1];
-      const pts = last.bust ? 'bust' : `${last.before - last.after}`;
-      prevChip.querySelector('span')!.textContent = `Volée précédente : ${pts} — corriger`;
-    }
+    if (canReview) prevChip.querySelector('span')!.textContent = `Volée précédente : ${engine.lastSummary()} — corriger`;
     const ev = turnEval();
-    const rem = remaining();
-    const st = playerStats(game);
-    const cur = game.current;
-    const shown = ev.bust ? rem[cur] : ev.remaining;
-
-    // Joueur actif en très gros, finish proposé, autres joueurs en dessous.
-    const left = 3 - volley.darts.length;
-    let co: HTMLElement | null = null;
-    if (game.winner == null && !ev.over && shown <= 170) {
-      const route = suggestCheckout(shown, left, game.config.doubleOut);
-      co = route
-        ? h('div', { class: 'checkout' }, route.map((d) => d.libelle).join('  ·  '))
-        : h('div', { class: 'checkout none' }, `Pas de finish en ${left} fléchette${left > 1 ? 's' : ''}`);
-    }
-    const active = h(
-      'div',
-      { class: 'active-card' },
-      h(
-        'div',
-        { class: 'active-head' },
-        h('span', { class: 'active-name' }, playerName(cur)),
-        h('span', { class: 'active-avg' }, st[cur].darts ? `moy. ${fmt1(st[cur].average)}` : `${game.config.start}`),
-      ),
-      h('div', { class: 'active-remaining' + (ev.bust ? ' bust' : '') }, String(shown)),
-      co,
-    );
-    const others =
-      game.config.players.length > 1
-        ? h(
-            'div',
-            { class: 'others' },
-            ...game.config.players
-              .map((name, i) => ({ name, i }))
-              .filter(({ i }) => i !== cur)
-              .map(({ name, i }) => h('div', { class: 'other' }, h('span', { class: 'other-name' }, name), h('span', { class: 'other-rem' }, String(rem[i])))),
-          )
-        : null;
-    scores.replaceChildren(...(others ? [active, others] : [active]));
+    renderScores(scores, engine, pending());
 
     // Les 3 fléchettes : touchables pour corriger (ou ajouter une fléchette oubliée).
     const cards = [0, 1, 2].map((i) => {
@@ -437,13 +396,13 @@ export function gameScreen(nav: Nav): Screen {
     lastPopped = -1;
     dartsRow.replaceChildren(
       ...cards,
-      h('div', { class: 'volley-total' + (ev.bust ? ' bust' : '') }, ev.bust ? 'BUST' : String(ev.scored)),
+      h('div', { class: 'volley-total' + (ev.bust ? ' bust' : '') }, ev.total),
     );
 
     strip.replaceChildren(
-      h('span', {}, playerName(cur)),
+      h('span', {}, playerName(engine.current)),
       h('span', {}, volley.darts.map((d) => d.score.libelle).join('  ') || '—'),
-      h('span', { class: 'rem' }, String(shown)),
+      h('span', { class: 'rem' }, stripText(engine, pending())),
     );
     undoBtn.disabled = volley.darts.length === 0;
     missBtn.disabled = turnOver();
@@ -532,9 +491,10 @@ export function gameScreen(nav: Nav): Screen {
 
   // --- Fin de partie --------------------------------------------------------
   function showEnd() {
-    const w = game.winner!;
-    const st = playerStats(game);
-    speak(`Victoire de ${playerName(w)} ! Moyenne ${Math.round(st[w].average)}.`);
+    const w = engine.winner!;
+    const { head, rows } = engine.stats();
+    speak(`Victoire de ${playerName(w)} !`);
+    addGame(engine.record());
     detector?.setMode('removal');
     toggleExpand(false);
     endLayer.replaceChildren(
@@ -543,16 +503,9 @@ export function gameScreen(nav: Nav): Screen {
       h(
         'div',
         { class: 'stats-table' },
-        h('div', { class: 'stat-row head' }, h('span', { class: 'n' }, 'Joueur'), h('span', {}, 'Moy. / volée'), h('span', {}, 'Fléchettes'), h('span', {}, 'Meilleure')),
-        ...st.map((p, i) =>
-          h(
-            'div',
-            { class: 'stat-row' + (i === w ? ' winner' : '') },
-            h('span', { class: 'n' }, p.name),
-            h('span', {}, fmt1(p.average)),
-            h('span', {}, String(p.darts)),
-            h('span', {}, String(p.best)),
-          ),
+        h('div', { class: 'stat-row head' }, h('span', { class: 'n' }, head[0]), ...head.slice(1).map((c) => h('span', {}, c))),
+        ...rows.map((r, i) =>
+          h('div', { class: 'stat-row' + (i === w ? ' winner' : '') }, h('span', { class: 'n' }, r[0]), ...r.slice(1).map((c) => h('span', {}, c))),
         ),
       ),
       h(
@@ -568,9 +521,16 @@ export function gameScreen(nav: Nav): Screen {
   }
 
   function rematch() {
-    game = newGame(game.config);
+    const cfg = engine.state.config as Partial<AnyConfig> & { players: string[] };
+    engine.state = newState({
+      mode: engine.mode,
+      players: cfg.players,
+      start: (cfg.start as 301 | 501) ?? 501,
+      doubleOut: cfg.doubleOut ?? true,
+    });
     volley = new Volley();
     shots.clear();
+    previous = null;
     announced = '';
     persist();
     endLayer.classList.add('hidden');
@@ -626,7 +586,7 @@ export function gameScreen(nav: Nav): Screen {
 
   function analyse() {
     // Partie gagnée : plus rien à détecter tant qu'on n'a pas relancé une partie.
-    if (game.winner != null) return;
+    if (engine.winner != null) return;
     const f = cam.frame();
     if (!f || !cal || !cv) return;
     const got = grab(f);
@@ -640,7 +600,7 @@ export function gameScreen(nav: Nav): Screen {
         getSettings().detector,
       );
       detSize = { w: img.width, h: img.height };
-      if (turnOver() || game.winner != null) detector.setMode('removal');
+      if (turnOver() || engine.winner != null) detector.setMode('removal');
     }
     const now0 = performance.now();
     if (lastAnalyseAt) perfGap.push(now0 - lastAnalyseAt);
@@ -652,7 +612,7 @@ export function gameScreen(nav: Nav): Screen {
     if (events.length) lastEventAt = performance.now();
     for (const ev of events) {
       if (ev.kind === 'dart') onDart(ev, img);
-      else if (ev.kind === 'cleared' && game.winner == null) {
+      else if (ev.kind === 'cleared' && engine.winner == null) {
         wantStart = true;
         // Volée précédente en cours de correction : elle attend d'être validée.
         if (reviewing) continue;
@@ -665,8 +625,8 @@ export function gameScreen(nav: Nav): Screen {
         return;
       } else if (ev.kind === 'ignored' && ev.reason === 'big' && !turnOver()) {
         setStatus('Quelque chose est devant la cible…', 'wait');
-      } else if (ev.kind === 'reference' && game.winner == null) {
-        setStatus(`Prêt — à ${playerName(game.current)} de lancer`, 'ready');
+      } else if (ev.kind === 'reference' && engine.winner == null) {
+        setStatus(`Prêt — à ${playerName(engine.current)} de lancer`, 'ready');
       }
     }
     // Image de la cible vide au début de la volée : référence pour rejouer la première
@@ -831,11 +791,11 @@ export function gameScreen(nav: Nav): Screen {
 
   setStatus('Ouverture de la caméra…', 'wait');
   render();
-  if (game.winner != null) showEnd();
+  if (engine.winner != null) showEnd();
   else if (volley.darts.length) {
     // Reprise avec une volée en cours : état à jour, sans répéter l'annonce vocale.
     const ev = turnEval();
-    announced = `${ev.bust}:${ev.finished}:${ev.scored}`;
+    announced = `${reviewing}:${ev.bust}:${ev.finished}:${ev.total}`;
     afterChange();
   }
   scheduleDraw();
@@ -856,8 +816,4 @@ export function gameScreen(nav: Nav): Screen {
       cam.dispose();
     },
   };
-}
-
-function fmt1(v: number): string {
-  return v.toFixed(1).replace('.', ',');
 }

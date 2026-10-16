@@ -5,11 +5,12 @@ import { calibrateScreen } from './screens/calibrate';
 import { helpScreen } from './screens/help';
 import { homeScreen } from './screens/home';
 import { settingsScreen } from './screens/settings';
+import { historyScreen } from './screens/history';
 import { setupScreen } from './screens/setup';
 import { gameInProgress } from './game/store';
 import { gameScreen } from './screens/game';
 
-export type ScreenName = 'home' | 'help' | 'settings' | 'calibrate' | 'setup' | 'game';
+export type ScreenName = 'home' | 'help' | 'settings' | 'calibrate' | 'setup' | 'game' | 'history';
 export type Nav = (name: ScreenName) => void;
 export type Screen = HTMLElement | { el: HTMLElement; dispose(): void };
 
@@ -40,6 +41,8 @@ function build(name: ScreenName): Screen {
       return calibrateScreen(nav);
     case 'setup':
       return setupScreen(nav);
+    case 'history':
+      return historyScreen(nav);
     case 'game':
       // La cible est détectée automatiquement à l'ouverture de la caméra.
       return gameScreen(nav);

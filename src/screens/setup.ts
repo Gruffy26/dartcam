@@ -1,16 +1,34 @@
 import { h } from '../dom';
 import { clearGame, lastConfig, saveGame, saveLastConfig } from '../game/store';
-import { newGame, type GameConfig } from '../game/x01';
+import { labelOf, newState, type AnyConfig } from '../game/engine';
+import type { GameMode } from '../game/history';
 import { icon } from '../icons';
 import type { Nav } from '../main';
 import { getSettings, updateSettings } from '../settings';
 import { unlockSpeech } from '../speech';
 import { appBar, group, row, segmented, toggle } from '../ui';
 
-// Préparation d'une partie : 501 / 301, double out, 1 à 4 joueurs.
+/** Une phrase pour dire à quoi on joue. */
+const MODE_HINTS: Record<GameMode, string> = {
+  x01: 'Descendre de 501 (ou 301) à zéro, pile, en finissant sur un double.',
+  cricket: 'Ouvrir le 20, 19, 18, 17, 16, 15 et le bull en trois marques, puis marquer dessus tant que l’adversaire ne les a pas fermés.',
+  horloge: 'Toucher le 1, puis le 2, et ainsi de suite jusqu’au 20.',
+  doubles: 'La même série, mais il faut le double à chaque fois : l’entraînement qui fait gagner les parties.',
+};
+
+// Préparation d'une partie : jeu, options, 1 à 4 joueurs.
 export function setupScreen(nav: Nav): HTMLElement {
   const base = lastConfig();
-  const cfg: GameConfig = { ...base, players: [...base.players] };
+  const cfg: AnyConfig = { ...base, players: [...base.players] };
+  // Options propres au X01 : masquées pour les autres jeux.
+  const x01Only = h(
+    'div',
+    { class: 'stack' },
+    segmented([{ value: 501, label: '501' }, { value: 301, label: '301' }], cfg.start, (v) => (cfg.start = v as 301 | 501)),
+    segmented([{ value: true, label: 'Double out' }, { value: false, label: 'Sortie libre' }], cfg.doubleOut, (v) => (cfg.doubleOut = v as boolean)),
+  );
+  const showX01 = () => x01Only.classList.toggle('hidden', cfg.mode !== 'x01');
+  showX01();
   const playersBody = h('div', { class: 'group-body players' });
 
   function renderPlayers() {
@@ -47,6 +65,7 @@ export function setupScreen(nav: Nav): HTMLElement {
       );
     playersBody.replaceChildren(...rows);
   }
+  const hint = h('p', { class: 'mode-hint' }, MODE_HINTS[cfg.mode]);
   const focusLast = () => (playersBody.querySelectorAll('input')[cfg.players.length - 1] as HTMLInputElement | undefined)?.focus();
   renderPlayers();
 
@@ -55,9 +74,10 @@ export function setupScreen(nav: Nav): HTMLElement {
     const config = { ...cfg, players };
     saveLastConfig(config);
     clearGame();
-    saveGame({ state: newGame(config), pending: [] });
+    const state = newState(config);
+    saveGame({ state, pending: [] });
     // Sur iPhone, la voix doit être « débloquée » par un toucher : on annonce le début.
-    unlockSpeech(`${config.start}, c'est parti ! À ${players[0]}.`);
+    unlockSpeech(`${labelOf(state)}, c'est parti ! À ${players[0]}.`);
     nav('game');
   }
 
@@ -67,8 +87,22 @@ export function setupScreen(nav: Nav): HTMLElement {
     appBar({ title: 'Nouvelle partie', onBack: () => nav('home') }),
     group(
       'Jeu',
-      segmented([{ value: 501, label: '501' }, { value: 301, label: '301' }], cfg.start, (v) => (cfg.start = v as 301 | 501)),
-      segmented([{ value: true, label: 'Double out' }, { value: false, label: 'Sortie libre' }], cfg.doubleOut, (v) => (cfg.doubleOut = v as boolean)),
+      segmented(
+        [
+          { value: 'x01', label: 'X01' },
+          { value: 'cricket', label: 'Cricket' },
+          { value: 'horloge', label: 'Horloge' },
+          { value: 'doubles', label: 'Doubles' },
+        ],
+        cfg.mode,
+        (v) => {
+          cfg.mode = v as GameMode;
+          showX01();
+          hint.textContent = MODE_HINTS[cfg.mode];
+        },
+      ),
+      hint,
+      x01Only,
     ),
     h('section', { class: 'group' }, h('h2', { class: 'group-title' }, 'Joueurs'), playersBody),
     group(null, row('Annonce vocale', 'Score de chaque volée à voix haute', toggle(getSettings().voice, (v) => updateSettings({ voice: v }), 'Annonce vocale'))),

@@ -1,7 +1,7 @@
 import { loadCalibration } from '../calibration';
 import { h } from '../dom';
 import { gameInProgress, lastConfig } from '../game/store';
-import { remainingScores } from '../game/x01';
+import { labelOf, summaryLines } from '../game/engine';
 import { icon } from '../icons';
 import type { Nav } from '../main';
 import { getSettings } from '../settings';
@@ -101,13 +101,11 @@ export function homeScreen(nav: Nav): HTMLElement {
     ? h(
         'button',
         { class: 'resume', onclick: () => nav('game') },
-        h('span', { class: 'resume-top' }, h('i', { class: 'live' }), 'Partie en cours'),
+        h('span', { class: 'resume-top' }, h('i', { class: 'live' }), labelOf(g.state)),
         h(
           'span',
           { class: 'resume-scores' },
-          ...g.state.config.players.map((p, i) =>
-            h('span', { class: 'resume-player' }, h('em', {}, String(remainingScores(g.state)[i])), h('small', {}, p)),
-          ),
+          ...summaryLines(g.state).map((p) => h('span', { class: 'resume-player' }, h('em', {}, p.value), h('small', {}, p.name))),
         ),
         h('span', { class: 'resume-go' }, 'Reprendre', icon('back', 18)),
       )
@@ -139,8 +137,9 @@ export function homeScreen(nav: Nav): HTMLElement {
       'nav',
       { class: 'bento' },
       tile('target', 'Vérifier la cible', 'Caméra et repères', () => nav('calibrate')),
+      tile('flag', 'Historique', 'Parties et moyennes', () => nav('history')),
       tile('help', 'Placer le téléphone', 'Conseils trépied', () => nav('help')),
-      Object.assign(tile('settings', 'Réglages', 'Voix, précision, données', () => nav('settings')), { className: 'tile wide' }),
+      tile('settings', 'Réglages', 'Voix, précision', () => nav('settings')),
     ),
     installCard(),
     h('p', { class: 'status-pill' }, h('i', {}), status),
