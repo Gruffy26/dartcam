@@ -386,9 +386,14 @@ export function locateDart(xy: ArrayLike<number>, outDir: Pt, maxAngleDeg = 35):
 export function scoreFragile(F2B: Mat3, tip: Pt, axis: Pt, libelle: string, mm: number): boolean {
   const scale = Math.sqrt(Math.abs(F2B[0] * F2B[4] - F2B[1] * F2B[3])) || 1;
   const d = mm / scale;
-  for (const k of [-d, d]) {
-    const p = applyH(F2B, { x: tip.x + axis.x * k, y: tip.y + axis.y * k });
-    if (scoreFromBoardCoords(p.x, p.y).libelle !== libelle) return true;
+  // Le long de l'axe (où se joue la précision du bout) et en travers (où se jouent les
+  // secteurs voisins, surtout près du centre : à 6 cm du bull, une case ne fait que 2 cm).
+  const perp = { x: -axis.y, y: axis.x };
+  for (const dir of [axis, perp]) {
+    for (const k of [-d, d]) {
+      const p = applyH(F2B, { x: tip.x + dir.x * k, y: tip.y + dir.y * k });
+      if (scoreFromBoardCoords(p.x, p.y).libelle !== libelle) return true;
+    }
   }
   return false;
 }

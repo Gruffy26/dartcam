@@ -88,10 +88,19 @@ describe('score fragile', () => {
     expect(scoreFragile(F2B, tip, up, '20', 2)).toBe(false);
   });
 
-  it('ne regarde que l’axe de la fléchette, pas les fils de côté', () => {
-    // Juste à côté du fil entre le 20 et le 1, mais l'axe est radial : le score tient.
+  it('marque aussi une pointe au bord d’un secteur voisin', () => {
+    // Juste à côté du fil entre le 20 et le 1 : à 130 mm du centre, 2 mm de côté suffisent.
     const a = ((9 - 0.3) * Math.PI) / 180;
     const tip = { x: 320 + 130 * Math.sin(a), y: 320 - 130 * Math.cos(a) };
-    expect(scoreFragile(F2B, tip, { x: Math.sin(a), y: -Math.cos(a) }, '20', 2)).toBe(false);
+    expect(scoreFragile(F2B, tip, { x: Math.sin(a), y: -Math.cos(a) }, '20', 2)).toBe(true);
+  });
+
+  it('le même écart angulaire compte près du centre, pas au bord', () => {
+    // 1,5° avant le fil : 1,6 mm à 60 mm du bull (douteux), 3,7 mm à 140 mm (sûr).
+    const a = ((9 - 1.5) * Math.PI) / 180;
+    const at = (r: number) => ({ x: 320 + r * Math.sin(a), y: 320 - r * Math.cos(a) });
+    const dir = { x: Math.sin(a), y: -Math.cos(a) };
+    expect(scoreFragile(F2B, at(60), dir, '20', 2)).toBe(true);
+    expect(scoreFragile(F2B, at(140), dir, '20', 2)).toBe(false);
   });
 });
